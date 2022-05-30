@@ -1,0 +1,3 @@
+- [ ] Compiler
+	- [ ] Parse primitives
+	- [ ] Test primitives
