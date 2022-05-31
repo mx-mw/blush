@@ -47,7 +47,7 @@ impl<'s> Compiler<'s> {
     pub fn compile(&mut self) -> CompileResult<()> {
         self.expression()?;
         self.consume(Some(TokenKind::Semicolon), "Expected ';' at end of expression")?;
-        // self.consume(None, "Expected end of expression")?;
+        self.consume(None, "Expected end of expression")?;
         Ok(())
     }
 
@@ -60,7 +60,7 @@ impl<'s> Compiler<'s> {
         self.current.clone()
     }
 
-    fn previous(&self) -> Option<TokenKind> {
+    fn _previous(&self) -> Option<TokenKind> {
         self.previous.clone()
     }
 
@@ -200,22 +200,21 @@ impl<'s> Compiler<'s> {
     /// Parse a unary expression
     /// i.e. parse `!x` or `-x`
     fn unary(&mut self) -> CompileResult<u8> {
-        let op_type = self.previous();
-
-        let rhs = self.primitive()?;
-
-        match op_type {
-            // Negate number
-            Some(TokenKind::Minus) => {
-                self.emit_byte(Instruction::Neg, vec![rhs as u8])
-            }
-            // Invert boolean
-            Some(TokenKind::Bang) => {
-                self.emit_byte(Instruction::Not, vec![rhs as u8])
-            }
-            _ => { }
-        };
-        Ok(rhs)
+        let unary_ops = vec![
+            (TokenKind::Minus, Instruction::Neg),
+            (TokenKind::Bang, Instruction::Not)
+        ];
+        Ok(if let Some(idx) = self.tag_any(unary_ops.iter()
+                                            .map(|i| i.0.clone())
+                                            .collect()) {
+            let rhs = self.primitive()?;
+            let store = self.use_register()?;
+            self.emit_byte(unary_ops[idx].1, vec![rhs, store]);
+            self.free_register(rhs);
+            store
+        } else {
+            self.primitive()?
+        })
     }
 
     /// Compile primitive expressions
@@ -245,7 +244,7 @@ impl<'s> Compiler<'s> {
             }
             _ => {
                 compile_error!(CompileError::TokenError, "Expected expression, got {:?}.", n)
-            },
+            }
         };
         res
     }
@@ -290,7 +289,8 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Instruction, Value};
+    use crate::{Instruction, Value, Compiler, TokenKind};
+    use logos::Logos;
 
     mod utils {
         use logos::Logos;
@@ -370,11 +370,24 @@ mod tests {
 
     #[test]
     fn unary() {
-        {
-
+        // No need to test negative numbers - regex parses negatives as well as positives
+        // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
+        let mut compiler = Compiler {
+            lexer: TokenKind::lexer("!false;"),
+            ..Default::default()
         };
-        {
 
-        };
+        compiler.compile().unwrap();
+
+        let mut instructions = Vec::new();
+        let mut constants = Vec::new();
+        utils::add_constant(&mut constants, &mut instructions, Value::VBool(false), 0);
+        instructions.extend(vec![
+            Instruction::Not as u8,
+            0,
+            1,
+        ]);
+        assert_eq!(compiler.instructions, instructions);
+        assert_eq!(compiler.constants, constants);
     }
 }
