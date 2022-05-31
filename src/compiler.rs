@@ -290,12 +290,11 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use logos::Logos;
     use crate::{Instruction, Value};
-    use super::Compiler;
-    use crate::TokenKind;
 
     mod utils {
+        use logos::Logos;
+        use crate::{Instruction, Value, Compiler, TokenKind};
         pub(super) fn add_constant(constants: &mut Vec<u8>, instructions: &mut Vec<u8>, value: Value, store: u8) {
             let idx = constants.len();
             let bytes: Vec<u8> = value.into();
@@ -367,5 +366,15 @@ mod tests {
     fn term() {
         utils::binexp_test('+', Instruction::Add);
         utils::binexp_test('-', Instruction::Sub);
+    }
+
+    #[test]
+    fn unary() {
+        {
+
+        };
+        {
+
+        };
     }
 }
