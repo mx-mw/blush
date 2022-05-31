@@ -1,20 +1,20 @@
 use crate::{instruction::Instruction, scanner::TokenKind, value::Value};
 use logos::{Lexer, Logos};
-
 pub type CompileResult<T> = Result<T, (CompileError, String)>;
 
 #[derive(Debug)]
 pub enum CompileError {
     TokenError, // A token was not in the correct position
+    RegisterError, // Any error involving registers
 }
 
 macro_rules! compile_error {
     ($kind:expr, $str:tt, $($arg:tt)*) => ({
-        eprintln!("Compile Error: {}", format!($str, $($arg)*));
+        eprintln!("Compile Error: {} @ {}", format!($str, $($arg)*), std::line!());
         return Err(($kind, format!($str, $($arg)*)));
     });
     ($kind:expr, $str:tt) => ({
-        eprintln!("Compile Error: {}", $str);
+        eprintln!("Compile Error: {} @ {}", $str, std::line!());
         return Err(($kind, $str.to_string()));
     });
 }
@@ -46,7 +46,8 @@ impl<'s> Compiler<'s> {
     /// Take the array of tokens and generate bytecode
     pub fn compile(&mut self) -> CompileResult<()> {
         self.expression()?;
-        self.consume(None, "Expected end of expression")?;
+        self.consume(Some(TokenKind::Semicolon), "Expected ';' at end of expression")?;
+        // self.consume(None, "Expected end of expression")?;
         Ok(())
     }
 
@@ -59,10 +60,8 @@ impl<'s> Compiler<'s> {
         self.current.clone()
     }
 
-    fn previous(&self) -> CompileResult<TokenKind> {
-        self.previous.clone().ok_or_else(|| {
-            (CompileError::TokenError, "".to_string())
-        })
+    fn previous(&self) -> Option<TokenKind> {
+        self.previous.clone()
     }
 
     /// Consume a token and expect to equal `kind`
@@ -81,12 +80,17 @@ impl<'s> Compiler<'s> {
 
     /// Get the next token without advancing
     fn peek(&self) -> Option<TokenKind> {
+
         self.lexer.clone().peekable().peek().cloned()
     }
 
     /// Get the next available register to store a value in
-    fn use_register(&self) -> u8 {
-        self.registers[0]
+    fn use_register(&mut self) -> CompileResult<u8> {
+        if self.registers.is_empty() {
+            compile_error!(CompileError::RegisterError, "No empty registers")
+        } else {
+            Ok(self.registers.remove(0))
+        }
     }
 
     /// Free a register
@@ -124,11 +128,11 @@ impl<'s> Compiler<'s> {
 
     /// Write a const and load it into a register
     /// Wraps [Compiler::emit_const]
-    fn store_const(&mut self, value: Value) -> u8 {
+    fn store_const(&mut self, value: Value) -> CompileResult<u8> {
         let (idx, len) = self.emit_const(value);
-        let store = self.use_register();
+        let store = self.use_register()?;
         self.emit_byte(Instruction::Load, vec![idx as u8, len as u8, store]);
-        store
+        Ok(store)
     }
 
     /// Check if the next token is expected
@@ -145,7 +149,6 @@ impl<'s> Compiler<'s> {
     fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
         for (idx, token) in expected.iter().enumerate() {
             if self.tag(token) {
-                self.next();
                 return Some(idx)
             }
         }
@@ -172,7 +175,7 @@ impl<'s> Compiler<'s> {
     /// i.e. parse `x + y` or `x - y`
     fn term(&mut self) -> CompileResult<u8> {
         self.binop(
-            |s| s.factor(),
+            Self::factor,
             true,
             vec![
                 (TokenKind::Plus,  Instruction::Add),
@@ -185,7 +188,7 @@ impl<'s> Compiler<'s> {
     /// i.e. parse `x * y` or `x / y`
     fn factor(&mut self) -> CompileResult<u8> {
         self.binop(
-            |s| s.unary(),
+            Self::unary,
             true,
             vec![
                 (TokenKind::Star, Instruction::Mul),
@@ -197,17 +200,17 @@ impl<'s> Compiler<'s> {
     /// Parse a unary expression
     /// i.e. parse `!x` or `-x`
     fn unary(&mut self) -> CompileResult<u8> {
-        let op_type = self.previous()?;
+        let op_type = self.previous();
 
         let rhs = self.primitive()?;
 
         match op_type {
             // Negate number
-            TokenKind::Minus => {
+            Some(TokenKind::Minus) => {
                 self.emit_byte(Instruction::Neg, vec![rhs as u8])
             }
             // Invert boolean
-            TokenKind::Bang => {
+            Some(TokenKind::Bang) => {
                 self.emit_byte(Instruction::Not, vec![rhs as u8])
             }
             _ => { }
@@ -221,6 +224,7 @@ impl<'s> Compiler<'s> {
     fn primitive(&'_ mut self) -> CompileResult<u8> {
         // Peek the next byte
         let next = self.next();
+
         // If we reached EOF
         if next.is_none() {
             compile_error!(CompileError::TokenError, "Expected expression, reached EOF")
@@ -231,10 +235,10 @@ impl<'s> Compiler<'s> {
         // Check if the token was a primitive datatype
         let res = match n {
             Number(n) => {
-                Ok(self.store_const(Value::VNumber(n)))
+                self.store_const(Value::VNumber(n))
             }
             Bool(b) => {
-                Ok(self.store_const(Value::VBool(b)))
+                self.store_const(Value::VBool(b))
             }
             LeftParen => {
                 self.grouping()
@@ -243,14 +247,17 @@ impl<'s> Compiler<'s> {
                 compile_error!(CompileError::TokenError, "Expected expression, got {:?}.", n)
             },
         };
-        self.consume(Some(Semicolon), "Expected ';' after expression")?;
         res
     }
 
-    fn binop(&mut self, next: fn(&mut Self) -> CompileResult<u8>, store: bool, expected: Vec<(TokenKind, Instruction)>) -> CompileResult<u8> {
+    fn binop(
+        &mut self,
+        next: fn(&mut Self) -> CompileResult<u8>,
+        store: bool,
+        expected: Vec<(TokenKind, Instruction)>
+    ) -> CompileResult<u8> {
         // Get the left hand side register idx
         let lhs = next(self)? as u8;
-
         // Check if the next token is any of the expected operators
         if let Some(idx) = self.tag_any(
             expected.iter().map(|i| i.0.clone()).collect()) {
@@ -259,7 +266,7 @@ impl<'s> Compiler<'s> {
             let mut args = vec![lhs, rhs];
             if store {
                 // Get the register to store the value in
-                args.push(self.use_register());
+                args.push(self.use_register()?);
             }
             // Emit the instruction and it's arguments
             self.emit_byte(expected[idx].clone().1, args.clone());
@@ -269,7 +276,7 @@ impl<'s> Compiler<'s> {
 
             // Return the register that the value was stored in
             Ok(if store {
-                args[3]
+                args[2]
             } else {
                 0
             })
@@ -288,65 +295,77 @@ mod tests {
     use super::Compiler;
     use crate::TokenKind;
 
-    fn add_constant(constants: &mut Vec<u8>, instructions: &mut Vec<u8>, value: Value, store: u8) {
-        let idx = constants.len();
-        let bytes: Vec<u8> = value.into();
-        constants.extend(bytes.clone());
-        instructions.extend(vec![
-            Instruction::Const as u8,
-            idx as u8,
-            bytes.len() as u8,
-            Instruction::Load as u8,
-            idx as u8,
-            bytes.len() as u8,
-            store
-        ]);
-    }
+    mod utils {
+        pub(super) fn add_constant(constants: &mut Vec<u8>, instructions: &mut Vec<u8>, value: Value, store: u8) {
+            let idx = constants.len();
+            let bytes: Vec<u8> = value.into();
+            constants.extend(bytes.clone());
+            instructions.extend(vec![
+                Instruction::Const as u8,
+                idx as u8,
+                bytes.len() as u8,
+                Instruction::Load as u8,
+                idx as u8,
+                bytes.len() as u8,
+                store
+            ]);
+        }
 
-    #[test]
-    fn constant() {
-        fn constant_test(value: Value, source: &str) {
+        pub(super) fn constant_test(value: Value, source: &str) {
             let mut compiler = Compiler {
                 lexer: TokenKind::lexer(source),
                 ..Default::default()
             };
 
             compiler.compile().unwrap();
-            let constants: Vec<u8> = value.into();
-            let instructions: Vec<u8> = vec![Instruction::Const as u8, 0, constants.len() as u8];
+            let mut constants = Vec::new();
+            let mut instructions = Vec::new();
+            add_constant(&mut constants, &mut instructions, value, 0);
             assert_eq!(compiler.instructions, instructions);
             assert_eq!(compiler.constants, constants);
         }
 
-        constant_test(Value::VNumber(1234.), "1234;");
-        constant_test(Value::VNumber(1523.23), "1523.23;");
-        constant_test(Value::VBool(false), "false;");
+        pub(super) fn binexp_test(op_c: char, op_i: Instruction) {
+            let source: String = format!("8 {} 12;", op_c);
+            let mut compiler = Compiler {
+                lexer: TokenKind::lexer(source.as_str()),
+                ..Default::default()
+            };
+
+            compiler.compile().unwrap();
+            let mut instructions = vec![];
+            let mut constants = vec![];
+            add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 0);
+            add_constant(&mut constants, &mut instructions, Value::VNumber(12.), 1);
+            instructions.append(&mut vec![
+                op_i as u8,
+                0,
+                1,
+                2,
+            ]);
+            assert_eq!(compiler.instructions, instructions);
+            assert_eq!(compiler.constants, constants);
+        }
+    }
+
+
+
+    #[test]
+    fn constant() {
+        utils::constant_test(Value::VNumber(1234.), "1234;");
+        utils::constant_test(Value::VNumber(1523.23), "1523.23;");
+        utils::constant_test(Value::VBool(false), "false;");
     }
 
     #[test]
     fn factor() {
-        const SOURCE: &str = "8 + 12;";
-        let mut compiler = Compiler {
-            lexer: TokenKind::lexer(SOURCE),
-            ..Default::default()
-        };
+        utils::binexp_test('*', Instruction::Mul);
+        utils::binexp_test('/', Instruction::Div);
+    }
 
-        assert!(compiler.compile().is_ok());
-        let mut instructions = vec![];
-        let mut constants = vec![];
-        add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 0);
-        add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 1);
-        instructions.append(&mut vec![
-            Instruction::Add as u8,
-            0,
-            1,
-            2,
-        ]);
-        instructions.push(Instruction::Add as u8);
-        instructions.push(0);
-        instructions.push(1);
-        instructions.push(2);
-        assert_eq!(compiler.instructions, instructions);
-
+    #[test]
+    fn term() {
+        utils::binexp_test('+', Instruction::Add);
+        utils::binexp_test('-', Instruction::Sub);
     }
 }

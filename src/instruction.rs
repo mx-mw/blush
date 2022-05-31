@@ -4,7 +4,7 @@
 */
 #[allow(unused)]
 #[repr(u8)]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Instruction {
 	Const,        // CONST [I] [L]  I: Index of the first byte L: The number of bytes taken
 	Load,         // LOAD  [I] [L] [A]  Load value at index I of length L into A
