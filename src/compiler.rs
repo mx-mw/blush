@@ -68,7 +68,7 @@ impl<'s> Compiler<'s> {
 
     /// Consume a token and expect to equal `kind`
     /// If it did not match, throw an error with `why` as the message
-    fn consume(&mut self, kind: Option<TokenKind>, why: &'static str) -> CompileResult<()> {
+    pub(crate) fn consume(&mut self, kind: Option<TokenKind>, why: &'static str) -> CompileResult<()> {
         match self.next() {
             // Match kind
             k if k == kind => { Ok(()) }
@@ -81,13 +81,13 @@ impl<'s> Compiler<'s> {
     }
 
     /// Get the next token without advancing
-    fn peek(&self) -> Option<TokenKind> {
+    pub(crate) fn peek(&self) -> Option<TokenKind> {
 
         self.lexer.clone().peekable().peek().cloned()
     }
 
     /// Get the next available register to store a value in
-    fn use_register(&mut self) -> CompileResult<u8> {
+    pub(crate) fn use_register(&mut self) -> CompileResult<u8> {
         if self.registers.is_empty() {
             compile_error!(CompileError::RegisterError, "No empty registers")
         } else {
@@ -96,14 +96,14 @@ impl<'s> Compiler<'s> {
     }
 
     /// Free a register
-    fn free_register(&mut self, register: u8) {
+    pub(crate) fn free_register(&mut self, register: u8) {
         self.registers.push(register)
     }
 
     /// Emit an [Instruction] and it's arguments
     /// Converts an [Instruction] to a u8, and pushes it along with it's arguments onto the end of the
     /// instructions vector
-    fn emit_byte(&mut self, instruction: Instruction, arguments: Vec<u8>) {
+    pub(crate) fn emit_byte(&mut self, instruction: Instruction, arguments: Vec<u8>) {
         // Push the instruction as a byte onto the vec
         self.instructions.push(instruction as u8);
         // Extend the `instructions` vec with the `arguments` vec
@@ -113,7 +113,7 @@ impl<'s> Compiler<'s> {
     /// Store a constant value and append the appropriate bytes to the bytecode
     /// Specifically, encode the value as bytes and append those to the constants vector, then emit
     /// a [Instruction::Const] and the starting index of the vector
-    fn emit_const(&mut self, value: Value) -> (usize, usize) {
+    pub(crate) fn emit_const(&mut self, value: Value) -> (usize, usize) {
         // Get the index of the first byte of the value
         let idx = self.constants.len();
         // Convert the value to a byte
@@ -130,7 +130,7 @@ impl<'s> Compiler<'s> {
 
     /// Write a const and load it into a register
     /// Wraps [Compiler::emit_const]
-    fn store_const(&mut self, value: Value) -> CompileResult<u8> {
+    pub(crate) fn store_const(&mut self, value: Value) -> CompileResult<u8> {
         let (idx, len) = self.emit_const(value);
         let store = self.use_register()?;
         self.emit_byte(Instruction::Load, vec![idx as u8, len as u8, store]);
@@ -138,7 +138,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Check if the next token is expected
-    fn tag(&mut self, expected: &TokenKind) -> bool {
+    pub(crate) fn tag(&mut self, expected: &TokenKind) -> bool {
         if self.peek() == Some(expected.clone()) {
             self.next();
             true
@@ -148,7 +148,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Wrapper around `tag` for multiple values of `expected`
-    fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
+    pub(crate) fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
         for (idx, token) in expected.iter().enumerate() {
             if self.tag(token) {
                 return Some(idx)
@@ -158,7 +158,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Parse a grouping (stuff in parentheses) expression
-    fn grouping(&mut self) -> CompileResult<u8> {
+    pub(crate) fn grouping(&mut self) -> CompileResult<u8> {
         let idx = self.expression()?;
         self.consume(
             Some(TokenKind::RightParen),
@@ -169,13 +169,13 @@ impl<'s> Compiler<'s> {
 
     /// Parse expressions and generate bytecode
     /// Root method for parsing expressions
-    fn expression(&mut self) -> CompileResult<u8> {
+    pub(crate) fn expression(&mut self) -> CompileResult<u8> {
         self.term()
     }
 
     /// Parse a term expression
     /// i.e. parse `x + y` or `x - y`
-    fn term(&mut self) -> CompileResult<u8> {
+    pub(crate) fn term(&mut self) -> CompileResult<u8> {
         self.binop(
             Self::factor,
             true,
@@ -188,7 +188,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a factor expression
     /// i.e. parse `x * y` or `x / y`
-    fn factor(&mut self) -> CompileResult<u8> {
+    pub(crate) fn factor(&mut self) -> CompileResult<u8> {
         self.binop(
             Self::unary,
             true,
@@ -201,7 +201,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a unary expression
     /// i.e. parse `!x` or `-x`
-    fn unary(&mut self) -> CompileResult<u8> {
+    pub(crate) fn unary(&mut self) -> CompileResult<u8> {
         let unary_ops = vec![
             (TokenKind::Minus, Instruction::Neg),
             (TokenKind::Bang, Instruction::Not)
@@ -222,7 +222,7 @@ impl<'s> Compiler<'s> {
     /// Compile primitive expressions
     /// i.e. take a value in blush code such as a number or string, and produce Const instructions
     /// according to the TokenKind and slice
-    fn primitive(&'_ mut self) -> CompileResult<u8> {
+    pub(crate) fn primitive(&'_ mut self) -> CompileResult<u8> {
         // Peek the next byte
         let next = self.next();
 
@@ -251,7 +251,7 @@ impl<'s> Compiler<'s> {
         res
     }
 
-    fn binop(
+    pub(crate) fn binop(
         &mut self,
         next: fn(&mut Self) -> CompileResult<u8>,
         store: bool,
@@ -291,8 +291,7 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Instruction, Value, Compiler, TokenKind};
-    use logos::Logos;
+    use crate::{Instruction, Value, Compiler};
 
     pub mod utils {
         use logos::Logos;
@@ -338,7 +337,7 @@ mod tests {
 
         /// Test a constant value
         pub(super) fn constant_test(value: Value, source: &str) {
-            let mut compiler = compiler(source);
+            let compiler = compiler(source);
 
             let mut constants = Vec::new();
             let mut instructions = Vec::new();
@@ -353,7 +352,7 @@ mod tests {
         /// Test a binary expression
         pub(super) fn binexp_test(op_c: char, op_i: Instruction) {
             let source: String = format!("8 {} 12;", op_c);
-            let mut compiler = compiler(source.as_str());
+            let compiler = compiler(source.as_str());
 
             let mut instructions = vec![];
             let mut constants = vec![];
@@ -377,7 +376,27 @@ mod tests {
         }
     }
 
-    use utils::{self, compiler};
+    use utils::compiler;
+
+    #[test]
+    fn emit_bytecode() {
+        let mut compiler = Compiler::default();
+        compiler.emit_byte(Instruction::Add, vec![12, 13, 234]);
+        assert_eq!(compiler.instructions, vec![2, 12, 13, 234]);
+        compiler.instructions = vec![];
+        compiler.emit_byte(Instruction::Mul, vec![34, 2, 12]);
+        assert_eq!(compiler.instructions, vec![4, 34, 2, 12]);
+        compiler.instructions = vec![];
+        compiler.emit_byte(Instruction::Load, vec![5, 2, 32]);
+        assert_eq!(compiler.instructions, vec![1, 5, 2, 32]);
+        compiler.instructions = vec![];
+        compiler.emit_byte(Instruction::Div, vec![1, 2, 3]);
+        assert_eq!(compiler.instructions, vec![5, 1, 2, 3]);
+        compiler.instructions = vec![];
+        compiler.emit_byte(Instruction::Not, vec![5, 6, 4]);
+        assert_eq!(compiler.instructions, vec![9, 5, 6, 4]);
+        compiler.instructions = vec![];
+    }
 
     #[test]
     fn constant() {
@@ -402,7 +421,7 @@ mod tests {
     fn unary() {
         // No need to test negative numbers - regex parses negatives as well as positives
         // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
-        let mut compiler = compiler("!false");
+        let compiler = compiler("!false;");
 
         let mut instructions = Vec::new();
         let mut constants = Vec::new();
