@@ -295,6 +295,17 @@ mod tests {
     mod utils {
         use logos::Logos;
         use crate::{Instruction, Value, Compiler, TokenKind};
+
+        pub(super) fn compiler(source: &str) -> Compiler {
+            let mut compiler = Compiler {
+                lexer: TokenKind::lexer(source),
+                ..Default::default()
+            };
+
+            compiler.compile().unwrap();
+            compiler
+        }
+
         pub(super) fn add_constant(constants: &mut Vec<u8>, instructions: &mut Vec<u8>, value: Value, store: u8) {
             let idx = constants.len();
             let bytes: Vec<u8> = value.into();
@@ -311,10 +322,7 @@ mod tests {
         }
 
         pub(super) fn constant_test(value: Value, source: &str) {
-            let mut compiler = Compiler {
-                lexer: TokenKind::lexer(source),
-                ..Default::default()
-            };
+            let mut compiler = compiler(source);
 
             compiler.compile().unwrap();
             let mut constants = Vec::new();
@@ -326,10 +334,7 @@ mod tests {
 
         pub(super) fn binexp_test(op_c: char, op_i: Instruction) {
             let source: String = format!("8 {} 12;", op_c);
-            let mut compiler = Compiler {
-                lexer: TokenKind::lexer(source.as_str()),
-                ..Default::default()
-            };
+            let mut compiler = compiler(source.as_str());
 
             compiler.compile().unwrap();
             let mut instructions = vec![];
@@ -347,7 +352,7 @@ mod tests {
         }
     }
 
-
+    use utils::{self, compiler};
 
     #[test]
     fn constant() {
@@ -372,10 +377,7 @@ mod tests {
     fn unary() {
         // No need to test negative numbers - regex parses negatives as well as positives
         // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
-        let mut compiler = Compiler {
-            lexer: TokenKind::lexer("!false;"),
-            ..Default::default()
-        };
+        let mut compiler = compiler("!false");
 
         compiler.compile().unwrap();
 
