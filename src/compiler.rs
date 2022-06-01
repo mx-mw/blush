@@ -23,7 +23,9 @@ macro_rules! compile_error {
 pub struct Compiler<'src> {
     pub lexer: Lexer<'src, TokenKind>,
     pub instructions: Vec<u8>,
+    // TODO(mx-mw) maybe store a single integer counter instead of a vector
     pub constants: Vec<u8>,
+    // TODO(mx-mw) investigate using a linked list to make this more efficient
     pub registers: Vec<u8>,
     pub previous: Option<TokenKind>,
     pub current: Option<TokenKind>,
@@ -292,24 +294,37 @@ mod tests {
     use crate::{Instruction, Value, Compiler, TokenKind};
     use logos::Logos;
 
-    mod utils {
+    pub mod utils {
         use logos::Logos;
         use crate::{Instruction, Value, Compiler, TokenKind};
 
+        /// Init a compiler instance
+        #[inline]
         pub(super) fn compiler(source: &str) -> Compiler {
+            // Create an instance, use default values as they are not necessary for testing (yet)
             let mut compiler = Compiler {
                 lexer: TokenKind::lexer(source),
                 ..Default::default()
             };
 
+            // TODO(mx-mw) add a parameter to make compilation optional
             compiler.compile().unwrap();
             compiler
         }
 
-        pub(super) fn add_constant(constants: &mut Vec<u8>, instructions: &mut Vec<u8>, value: Value, store: u8) {
+        /// Emit the bytecode to add a constant to the constants and instructions vectors
+        pub(super) fn add_constant(
+            constants: &mut Vec<u8>,
+            instructions: &mut Vec<u8>,
+            value: Value, store: u8
+        ) {
+            // Get the index at which the first byte of the value will be stored
             let idx = constants.len();
+            // Get the raw bytes of the constant
             let bytes: Vec<u8> = value.into();
+            // Push the value bytes onto the constants array
             constants.extend(bytes.clone());
+            // Push the appropriate instructions to store a constant and load it into a register
             instructions.extend(vec![
                 Instruction::Const as u8,
                 idx as u8,
@@ -321,33 +336,43 @@ mod tests {
             ]);
         }
 
+        /// Test a constant value
         pub(super) fn constant_test(value: Value, source: &str) {
             let mut compiler = compiler(source);
 
-            compiler.compile().unwrap();
             let mut constants = Vec::new();
             let mut instructions = Vec::new();
+            // Add the expected value onto the arrays
             add_constant(&mut constants, &mut instructions, value, 0);
+            // Assert that the correct instructions were emitted
             assert_eq!(compiler.instructions, instructions);
+            // Assert that the correct values were stored
             assert_eq!(compiler.constants, constants);
         }
 
+        /// Test a binary expression
         pub(super) fn binexp_test(op_c: char, op_i: Instruction) {
             let source: String = format!("8 {} 12;", op_c);
             let mut compiler = compiler(source.as_str());
 
-            compiler.compile().unwrap();
             let mut instructions = vec![];
             let mut constants = vec![];
+            // Add the default testing values as constants to the arrays
             add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 0);
             add_constant(&mut constants, &mut instructions, Value::VNumber(12.), 1);
+
+            // Add the expected instruction and its arguments to the vector
+            // TODO(mx-mw) some binary expressions do not store their result... Add an option to toggle this behaviour
             instructions.append(&mut vec![
                 op_i as u8,
                 0,
                 1,
                 2,
             ]);
+
+            // Assert that the correct instructions were emitted
             assert_eq!(compiler.instructions, instructions);
+            // Assert that the correct values were stored
             assert_eq!(compiler.constants, constants);
         }
     }
@@ -378,8 +403,6 @@ mod tests {
         // No need to test negative numbers - regex parses negatives as well as positives
         // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
         let mut compiler = compiler("!false");
-
-        compiler.compile().unwrap();
 
         let mut instructions = Vec::new();
         let mut constants = Vec::new();
