@@ -2,9 +2,9 @@ use crate::{instruction::Instruction, scanner::TokenKind, value::Value};
 use logos::{Lexer, Logos};
 pub type CompileResult<T> = Result<T, (CompileError, String)>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CompileError {
-    TokenError, // A token was not in the correct position
+    TokenError,    // A token was not in the correct position
     RegisterError, // Any error involving registers
 }
 
@@ -48,7 +48,10 @@ impl<'s> Compiler<'s> {
     /// Take the array of tokens and generate bytecode
     pub fn compile(&mut self) -> CompileResult<()> {
         self.expression()?;
-        self.consume(Some(TokenKind::Semicolon), "Expected ';' at end of expression")?;
+        self.consume(
+            Some(TokenKind::Semicolon),
+            "Expected ';' at end of expression",
+        )?;
         self.consume(None, "Expected end of expression")?;
         Ok(())
     }
@@ -68,13 +71,22 @@ impl<'s> Compiler<'s> {
 
     /// Consume a token and expect to equal `kind`
     /// If it did not match, throw an error with `why` as the message
-    pub(crate) fn consume(&mut self, kind: Option<TokenKind>, why: &'static str) -> CompileResult<()> {
+    pub(crate) fn consume(
+        &mut self,
+        kind: Option<TokenKind>,
+        why: &'static str,
+    ) -> CompileResult<()> {
         match self.next() {
             // Match kind
-            k if k == kind => { Ok(()) }
+            k if k == kind => Ok(()),
             // Give a slightly more verbose error showing the token it saw
-            Some(k) => compile_error!(CompileError::TokenError,
-                                                "{} (Expected {:?}; got {:?})", why, kind, k),
+            Some(k) => compile_error!(
+                CompileError::TokenError,
+                "{} (Expected {:?}; got {:?})",
+                why,
+                kind,
+                k
+            ),
             // None was not expected
             None => compile_error!(CompileError::TokenError, "{} (Expected {:?})", why, kind),
         }
@@ -82,7 +94,6 @@ impl<'s> Compiler<'s> {
 
     /// Get the next token without advancing
     pub(crate) fn peek(&self) -> Option<TokenKind> {
-
         self.lexer.clone().peekable().peek().cloned()
     }
 
@@ -119,10 +130,7 @@ impl<'s> Compiler<'s> {
         // Convert the value to a byte
         let value: Vec<u8> = value.into();
         // Emit the byte with the starting index and the length of the value as the arguments
-        self.emit_byte(
-            Instruction::Const,
-            vec![idx as u8, value.len() as u8],
-        );
+        self.emit_byte(Instruction::Const, vec![idx as u8, value.len() as u8]);
         // Append the byteified value onto the `constants` vec
         self.constants.extend(value.clone());
         (idx, value.len())
@@ -151,7 +159,7 @@ impl<'s> Compiler<'s> {
     pub(crate) fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
         for (idx, token) in expected.iter().enumerate() {
             if self.tag(token) {
-                return Some(idx)
+                return Some(idx);
             }
         }
         None
@@ -162,7 +170,7 @@ impl<'s> Compiler<'s> {
         let idx = self.expression()?;
         self.consume(
             Some(TokenKind::RightParen),
-            "Expected ')' following expression."
+            "Expected ')' following expression.",
         )?;
         Ok(idx)
     }
@@ -170,7 +178,22 @@ impl<'s> Compiler<'s> {
     /// Parse expressions and generate bytecode
     /// Root method for parsing expressions
     pub(crate) fn expression(&mut self) -> CompileResult<u8> {
-        self.term()
+        self.comparison()
+    }
+
+    /// Parse a comparison expression.
+    /// i.e. parse `x < y`, `x > y`, `x <= y` or `x >= y`
+    pub(crate) fn comparison(&mut self) -> CompileResult<u8> {
+        self.binop(
+            Self::term,
+            false,
+            vec![
+                (TokenKind::Less, Instruction::Lt, false),
+                (TokenKind::Greater, Instruction::Lt, true),
+                (TokenKind::LessEqual, Instruction::Le, false),
+                (TokenKind::GreaterEqual, Instruction::Le, true),
+            ],
+        )
     }
 
     /// Parse a term expression
@@ -180,9 +203,9 @@ impl<'s> Compiler<'s> {
             Self::factor,
             true,
             vec![
-                (TokenKind::Plus,  Instruction::Add),
-                (TokenKind::Minus, Instruction::Sub)
-            ]
+                (TokenKind::Plus, Instruction::Add, false),
+                (TokenKind::Minus, Instruction::Sub, false),
+            ],
         )
     }
 
@@ -193,9 +216,9 @@ impl<'s> Compiler<'s> {
             Self::unary,
             true,
             vec![
-                (TokenKind::Star, Instruction::Mul),
-                (TokenKind::Slash, Instruction::Div)
-            ]
+                (TokenKind::Star, Instruction::Mul, false),
+                (TokenKind::Slash, Instruction::Div, false),
+            ],
         )
     }
 
@@ -204,19 +227,19 @@ impl<'s> Compiler<'s> {
     pub(crate) fn unary(&mut self) -> CompileResult<u8> {
         let unary_ops = vec![
             (TokenKind::Minus, Instruction::Neg),
-            (TokenKind::Bang, Instruction::Not)
+            (TokenKind::Bang, Instruction::Not),
         ];
-        Ok(if let Some(idx) = self.tag_any(unary_ops.iter()
-                                            .map(|i| i.0.clone())
-                                            .collect()) {
-            let rhs = self.primitive()?;
-            let store = self.use_register()?;
-            self.emit_byte(unary_ops[idx].1, vec![rhs, store]);
-            self.free_register(rhs);
-            store
-        } else {
-            self.primitive()?
-        })
+        Ok(
+            if let Some(idx) = self.tag_any(unary_ops.iter().map(|i| i.0.clone()).collect()) {
+                let rhs = self.primitive()?;
+                let store = self.use_register()?;
+                self.emit_byte(unary_ops[idx].1, vec![rhs, store]);
+                self.free_register(rhs);
+                store
+            } else {
+                self.primitive()?
+            },
+        )
     }
 
     /// Compile primitive expressions
@@ -235,17 +258,15 @@ impl<'s> Compiler<'s> {
         use TokenKind::*;
         // Check if the token was a primitive datatype
         let res = match n {
-            Number(n) => {
-                self.store_const(Value::VNumber(n))
-            }
-            Bool(b) => {
-                self.store_const(Value::VBool(b))
-            }
-            LeftParen => {
-                self.grouping()
-            }
+            Number(n) => self.store_const(Value::VNumber(n)),
+            Bool(b) => self.store_const(Value::VBool(b)),
+            LeftParen => self.grouping(),
             _ => {
-                compile_error!(CompileError::TokenError, "Expected expression, got {:?}.", n)
+                compile_error!(
+                    CompileError::TokenError,
+                    "Expected expression, got {:?}.",
+                    n
+                )
             }
         };
         res
@@ -255,16 +276,19 @@ impl<'s> Compiler<'s> {
         &mut self,
         next: fn(&mut Self) -> CompileResult<u8>,
         store: bool,
-        expected: Vec<(TokenKind, Instruction)>
+        expected: Vec<(TokenKind, Instruction, bool)>,
     ) -> CompileResult<u8> {
         // Get the left hand side register idx
         let lhs = next(self)? as u8;
         // Check if the next token is any of the expected operators
-        if let Some(idx) = self.tag_any(
-            expected.iter().map(|i| i.0.clone()).collect()) {
+        if let Some(idx) = self.tag_any(expected.iter().map(|i| i.0.clone()).collect()) {
             // Get the right hand side register idx
             let rhs = next(self)? as u8;
-            let mut args = vec![lhs, rhs];
+            let mut args = if expected[idx].2 {
+                vec![lhs, rhs]
+            } else {
+                vec![rhs, lhs]
+            };
             if store {
                 // Get the register to store the value in
                 args.push(self.use_register()?);
@@ -276,11 +300,7 @@ impl<'s> Compiler<'s> {
             self.free_register(rhs);
 
             // Return the register that the value was stored in
-            Ok(if store {
-                args[2]
-            } else {
-                0
-            })
+            Ok(if store { args[2] } else { 0 })
         } else {
             // The value was not any of the expected operators, so act as a proxy for the higher
             // precedence operation.
@@ -291,11 +311,12 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Instruction, Value, Compiler};
+    use crate::{compiler::CompileError, Compiler, Instruction, TokenKind, Value};
+    use logos::Logos;
 
     pub mod utils {
+        use crate::{Compiler, Instruction, TokenKind, Value};
         use logos::Logos;
-        use crate::{Instruction, Value, Compiler, TokenKind};
 
         /// Init a compiler instance
         #[inline]
@@ -315,7 +336,8 @@ mod tests {
         pub(super) fn add_constant(
             constants: &mut Vec<u8>,
             instructions: &mut Vec<u8>,
-            value: Value, store: u8
+            value: Value,
+            store: u8,
         ) {
             // Get the index at which the first byte of the value will be stored
             let idx = constants.len();
@@ -331,7 +353,7 @@ mod tests {
                 Instruction::Load as u8,
                 idx as u8,
                 bytes.len() as u8,
-                store
+                store,
             ]);
         }
 
@@ -350,7 +372,7 @@ mod tests {
         }
 
         /// Test a binary expression
-        pub(super) fn binexp_test(op_c: char, op_i: Instruction) {
+        pub(super) fn binexp_test(op_c: &'static str, op_i: Instruction, rev: bool, store: bool) {
             let source: String = format!("8 {} 12;", op_c);
             let compiler = compiler(source.as_str());
 
@@ -359,15 +381,15 @@ mod tests {
             // Add the default testing values as constants to the arrays
             add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 0);
             add_constant(&mut constants, &mut instructions, Value::VNumber(12.), 1);
+            if rev {
+                instructions.append(&mut vec![op_i as u8, 0, 1]);
+            } else {
+                instructions.append(&mut vec![op_i as u8, 1, 0]);
+            }
 
-            // Add the expected instruction and its arguments to the vector
-            // TODO(mx-mw) some binary expressions do not store their result... Add an option to toggle this behaviour
-            instructions.append(&mut vec![
-                op_i as u8,
-                0,
-                1,
-                2,
-            ]);
+            if store {
+                instructions.push(2)
+            }
 
             // Assert that the correct instructions were emitted
             assert_eq!(compiler.instructions, instructions);
@@ -399,6 +421,28 @@ mod tests {
     }
 
     #[test]
+    fn consume() {
+        let mut compiler = Compiler::default();
+        compiler.lexer = TokenKind::lexer(";;;;;;");
+        assert!(compiler.consume(Some(TokenKind::Semicolon), "").is_ok());
+        assert_eq!(
+            compiler.consume(Some(TokenKind::Bang), "..."),
+            Err((
+                CompileError::TokenError,
+                "... (Expected Some(Bang); got Semicolon)".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn comparison() {
+        utils::binexp_test("<", Instruction::Lt, false, false);
+        utils::binexp_test(">", Instruction::Lt, true, false);
+        utils::binexp_test("<=", Instruction::Le, false, false);
+        utils::binexp_test(">=", Instruction::Le, true, false);
+    }
+
+    #[test]
     fn constant() {
         utils::constant_test(Value::VNumber(1234.), "1234;");
         utils::constant_test(Value::VNumber(1523.23), "1523.23;");
@@ -407,14 +451,14 @@ mod tests {
 
     #[test]
     fn factor() {
-        utils::binexp_test('*', Instruction::Mul);
-        utils::binexp_test('/', Instruction::Div);
+        utils::binexp_test("*", Instruction::Mul, false, true);
+        utils::binexp_test("/", Instruction::Div, false, true);
     }
 
     #[test]
     fn term() {
-        utils::binexp_test('+', Instruction::Add);
-        utils::binexp_test('-', Instruction::Sub);
+        utils::binexp_test("+", Instruction::Add, false, true);
+        utils::binexp_test("-", Instruction::Sub, false, true);
     }
 
     #[test]
@@ -426,11 +470,7 @@ mod tests {
         let mut instructions = Vec::new();
         let mut constants = Vec::new();
         utils::add_constant(&mut constants, &mut instructions, Value::VBool(false), 0);
-        instructions.extend(vec![
-            Instruction::Not as u8,
-            0,
-            1,
-        ]);
+        instructions.extend(vec![Instruction::Not as u8, 0, 1]);
         assert_eq!(compiler.instructions, instructions);
         assert_eq!(compiler.constants, constants);
     }

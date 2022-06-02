@@ -1,9 +1,9 @@
+mod chunk;
 mod compiler;
 mod instruction;
 mod scanner;
 mod value;
 mod vm;
-mod chunk;
 
 pub use compiler::Compiler;
 pub use instruction::Instruction;
@@ -14,9 +14,9 @@ pub use scanner::TokenKind;
 use logos::Logos;
 
 pub fn run(source: &str) {
-	let mut compiler = Compiler {
-		lexer: TokenKind::lexer(source),
-		..Default::default()
-	};
-	compiler.compile().unwrap()
+    let mut compiler = Compiler {
+        lexer: TokenKind::lexer(source),
+        ..Default::default()
+    };
+    compiler.compile().unwrap()
 }
