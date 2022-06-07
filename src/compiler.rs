@@ -19,16 +19,38 @@ macro_rules! compile_error {
     });
 }
 
+pub struct Local {
+    name: String,
+    depth: u8,
+}
+
+pub struct Scope {
+    locals: Vec<Local>,
+    num_locals: u8,
+    depth: u8,
+}
+
+impl Default for Scope {
+    fn default() -> Self {
+        Self {
+            locals: Vec::new(),
+            num_locals: 0,
+            depth: 0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Compiler<'src> {
     pub lexer: Lexer<'src, TokenKind>,
     pub instructions: Vec<u8>,
-    // TODO(mx-mw) maybe store a single integer counter instead of a vector
     pub constants: Vec<u8>,
     // TODO(mx-mw) investigate using a linked list to make this more efficient
     pub registers: Vec<u8>,
     pub previous: Option<TokenKind>,
+    pub previous_slice: String,
     pub current: Option<TokenKind>,
+    pub scope: Scope,
 }
 
 impl Default for Compiler<'_> {
@@ -40,6 +62,8 @@ impl Default for Compiler<'_> {
             registers: (0..16).collect(),
             previous: None,
             current: None,
+            previous_slice: "".into(),
+            scope: Scope::default()
         }
     }
 }
@@ -47,11 +71,9 @@ impl Default for Compiler<'_> {
 impl<'s> Compiler<'s> {
     /// Take the array of tokens and generate bytecode
     pub fn compile(&mut self) -> CompileResult<()> {
-        self.expression()?;
-        self.consume(
-            Some(TokenKind::Semicolon),
-            "Expected ';' at end of expression",
-        )?;
+        while self.peek() != None{
+            self.declaration()?;
+        }
         self.consume(None, "Expected end of expression")?;
         Ok(())
     }
@@ -60,12 +82,13 @@ impl<'s> Compiler<'s> {
     /// Consume and return the next token if it exists
     fn next(&mut self) -> Option<TokenKind> {
         self.previous = self.current.clone();
+        self.previous_slice = self.lexer.slice().to_string();
         self.current = self.lexer.next();
 
         self.current.clone()
     }
 
-    fn _previous(&self) -> Option<TokenKind> {
+    fn previous(&self) -> Option<TokenKind> {
         self.previous.clone()
     }
 
@@ -124,30 +147,22 @@ impl<'s> Compiler<'s> {
     /// Store a constant value and append the appropriate bytes to the bytecode
     /// Specifically, encode the value as bytes and append those to the constants vector, then emit
     /// a [Instruction::Const] and the starting index of the vector
-    pub(crate) fn emit_const(&mut self, value: Value) -> (usize, usize) {
+    pub(crate) fn emit_const(&mut self, value: Value) -> CompileResult<u8> {
         // Get the index of the first byte of the value
         let idx = self.constants.len();
-        // Convert the value to a byte
+        // Convert the value to bytes
         let value: Vec<u8> = value.into();
         // Emit the byte with the starting index and the length of the value as the arguments
-        self.emit_byte(Instruction::Const, vec![idx as u8, value.len() as u8]);
+        let store = self.use_register()?;
+        self.emit_byte(Instruction::Const, vec![idx as u8, value.len() as u8, store]);
         // Append the byteified value onto the `constants` vec
         self.constants.extend(value.clone());
-        (idx, value.len())
-    }
-
-    /// Write a const and load it into a register
-    /// Wraps [Compiler::emit_const]
-    pub(crate) fn store_const(&mut self, value: Value) -> CompileResult<u8> {
-        let (idx, len) = self.emit_const(value);
-        let store = self.use_register()?;
-        self.emit_byte(Instruction::Load, vec![idx as u8, len as u8, store]);
         Ok(store)
     }
 
     /// Check if the next token is expected
-    pub(crate) fn tag(&mut self, expected: &TokenKind) -> bool {
-        if self.peek() == Some(expected.clone()) {
+    pub(crate) fn tag(&mut self, expected: Option<&TokenKind>) -> bool {
+        if self.peek() == expected.clone() {
             self.next();
             true
         } else {
@@ -158,27 +173,75 @@ impl<'s> Compiler<'s> {
     /// Wrapper around `tag` for multiple values of `expected`
     pub(crate) fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
         for (idx, token) in expected.iter().enumerate() {
-            if self.tag(token) {
+            if self.tag(Some(token)) {
                 return Some(idx);
             }
         }
         None
     }
 
-    /// Parse a grouping (stuff in parentheses) expression
-    pub(crate) fn grouping(&mut self) -> CompileResult<u8> {
-        let idx = self.expression()?;
+    pub(crate) fn declaration(&mut self) -> CompileResult<()> {
+        if self.tag(Some(&TokenKind::Let)) {
+            self.let_declaration()
+        } else {
+            self.statement()?;
+            Ok(())
+        }
+    }
+
+    pub(crate) fn let_declaration(&mut self) -> CompileResult<()> {
+        let global = self.parse_variable("Expected variable name after 'let'.")?;
+
         self.consume(
-            Some(TokenKind::RightParen),
-            "Expected ')' following expression.",
+            Some(TokenKind::Equal),
+            "Variables must be initialized."
         )?;
-        Ok(idx)
+        let v = self.expression()?;
+        self.consume(
+            Some(TokenKind::Semicolon),
+            "Expected ';' after variable declaration"
+        )?;
+        self.define_variable(global, v);
+        Ok(())
+    }
+
+    pub(crate) fn statement(&mut self) -> CompileResult<u8> {
+        if self.tag(Some(&TokenKind::LeftBrace)) {
+            self.begin_scope();
+            let v = self.block()?;
+            self.end_scope();
+            Ok(v)
+        } else {
+            self.expression_stmt()
+        }
+    }
+
+    pub(crate) fn expression_stmt(&mut self) -> CompileResult<u8> {
+        let res = self.expression()?;
+        self.consume(
+            Some(TokenKind::Semicolon),
+            "Expected ';' at end of expression",
+        )?;
+        Ok(res)
     }
 
     /// Parse expressions and generate bytecode
     /// Root method for parsing expressions
     pub(crate) fn expression(&mut self) -> CompileResult<u8> {
-        self.comparison()
+        self.equality()
+    }
+
+    /// Parse an equality assertion expression.
+    /// i.e. parse `x == y` or `x != y`
+    pub(crate) fn equality(&mut self) -> CompileResult<u8> {
+        self.binop(
+            Self::comparison,
+            false,
+            vec![
+                (TokenKind::EqualEqual, Instruction::Eq, false),
+                (TokenKind::BangEqual, Instruction::Ne, false),
+            ]
+        )
     }
 
     /// Parse a comparison expression.
@@ -242,6 +305,16 @@ impl<'s> Compiler<'s> {
         )
     }
 
+    /// Parse a grouping (stuff in parentheses) expression
+    pub(crate) fn grouping(&mut self) -> CompileResult<u8> {
+        let idx = self.expression()?;
+        self.consume(
+            Some(TokenKind::RightParen),
+            "Expected ')' following expression.",
+        )?;
+        Ok(idx)
+    }
+
     /// Compile primitive expressions
     /// i.e. take a value in blush code such as a number or string, and produce Const instructions
     /// according to the TokenKind and slice
@@ -258,8 +331,9 @@ impl<'s> Compiler<'s> {
         use TokenKind::*;
         // Check if the token was a primitive datatype
         let res = match n {
-            Number(n) => self.store_const(Value::VNumber(n)),
-            Bool(b) => self.store_const(Value::VBool(b)),
+            Number(n) => self.emit_const(Value::VNumber(n)),
+            Bool(b) => self.emit_const(Value::VBool(b)),
+            Identifier => self.load_variable(),
             LeftParen => self.grouping(),
             _ => {
                 compile_error!(
@@ -272,6 +346,60 @@ impl<'s> Compiler<'s> {
         res
     }
 
+    pub(crate) fn load_variable(&mut self) -> CompileResult<u8> {
+        let idx = self.ident_const()?;
+        if self.tag(Some(&TokenKind::Equal)) {
+            let value = self.expression()?;
+            self.emit_byte(Instruction::Set, vec![idx, value])
+        }
+        let store = self.use_register()?;
+        self.emit_byte(Instruction::Read, vec![idx, store]);
+        Ok(store)
+    }
+
+    pub(crate) fn block(&mut self) -> CompileResult<u8> {
+        while !self.tag(Some(&TokenKind::RightBrace)) && !self.tag(None) {
+            self.declaration();
+        }
+        self.consume(Some(TokenKind::RightBrace), "Expect '}' after block.");
+        Ok(0) // TODO(mx-mw) implement returning values
+    }
+
+    pub(crate) fn begin_scope(&mut self) {
+        self.scope.depth += 1;
+    }
+
+    pub(crate) fn end_scope(&mut self) {
+        self.scope.depth -= 1;
+    }
+
+    /// Parse a variable and produce a global index
+    pub(crate) fn parse_variable(&mut self, why: &str) -> CompileResult<u8> {
+        self.consume(Some(TokenKind::Identifier), why)?;
+
+        self.declare_variable();
+
+        self.ident_const()
+    }
+
+    pub(crate) fn declare_variable(&mut self) {
+        self.scope.num_locals += 1;
+        self.scope.locals.push(Local {
+            name: self.previous_slice.clone(),
+            depth: self.scope.depth
+        });
+    }
+
+    pub(crate) fn ident_const(&mut self) -> CompileResult<u8> {
+        self.emit_const(Value::VString(self.lexer.slice().to_string()))
+    }
+
+    pub(crate) fn define_variable(&mut self, ident_idx: u8, value_idx: u8) -> CompileResult<()> {
+        Ok(self.emit_byte(Instruction::Let, vec![ident_idx, value_idx]))
+    }
+
+    /// Parse a binary expression.
+    /// i.e. parse any expression which consists of a prefix, infix and suffix.
     pub(crate) fn binop(
         &mut self,
         next: fn(&mut Self) -> CompileResult<u8>,
@@ -311,7 +439,7 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{compiler::CompileError, Compiler, Instruction, TokenKind, Value};
+    use crate::{Compiler, Instruction, TokenKind, Value};
     use logos::Logos;
 
     pub mod utils {
@@ -416,7 +544,7 @@ mod tests {
         assert_eq!(compiler.instructions, vec![5, 1, 2, 3]);
         compiler.instructions = vec![];
         compiler.emit_byte(Instruction::Not, vec![5, 6, 4]);
-        assert_eq!(compiler.instructions, vec![9, 5, 6, 4]);
+        assert_eq!(compiler.instructions, vec![10, 5, 6, 4]);
         compiler.instructions = vec![];
     }
 
@@ -425,13 +553,14 @@ mod tests {
         let mut compiler = Compiler::default();
         compiler.lexer = TokenKind::lexer(";;;;;;");
         assert!(compiler.consume(Some(TokenKind::Semicolon), "").is_ok());
-        assert_eq!(
-            compiler.consume(Some(TokenKind::Bang), "..."),
-            Err((
-                CompileError::TokenError,
-                "... (Expected Some(Bang); got Semicolon)".to_string()
-            ))
-        );
+        // TODO(mx-mw) do this but without the console stuff... maybe add a flag for logging
+        // assert_eq!(
+        //     compiler.consume(Some(TokenKind::Bang), "..."),
+        //     Err((
+        //         CompileError::TokenError,
+        //         "... (Expected Some(Bang); got Semicolon)".to_string()
+        //     ))
+        // );
     }
 
     #[test]
