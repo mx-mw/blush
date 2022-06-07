@@ -1,3 +1,7 @@
 - [ ] Compiler
-	- [ ] Parse primitives
-	- [ ] Test primitives
+	- [x] Parse primitives
+	- [x] Test primitives
+	- [x] Parse unary expressions
+	- [x] Test unary expressions
+	- [ ] Parse binary expressions
+	- [ ] Test binary expressions
