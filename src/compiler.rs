@@ -1,4 +1,4 @@
-use crate::{instruction::Instruction, scanner::TokenKind, value::Value};
+use crate::{Instruction, TokenKind, Value, Block, SealedBlock};
 use logos::{Lexer, Logos};
 pub type CompileResult<T> = Result<T, (CompileError, String)>;
 
@@ -19,33 +19,24 @@ macro_rules! compile_error {
     });
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct Local {
     name: String,
     depth: u8,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scope {
     locals: Vec<Local>,
     num_locals: u8,
     depth: u8,
 }
 
-impl Default for Scope {
-    fn default() -> Self {
-        Self {
-            locals: Vec::new(),
-            num_locals: 0,
-            depth: 0,
-        }
-    }
-}
-
 #[derive(Clone)]
 pub struct Compiler<'src> {
     pub lexer: Lexer<'src, TokenKind>,
-    pub instructions: Vec<u8>,
-    pub constants: Vec<u8>,
-    // TODO(mx-mw) investigate using a linked list to make this more efficient
+	pub sealed_blocks: Vec<SealedBlock>,
+	pub current_block: Block,
     pub registers: Vec<u8>,
     pub previous: Option<TokenKind>,
     pub previous_slice: String,
@@ -57,13 +48,13 @@ impl Default for Compiler<'_> {
     fn default() -> Self {
         Self {
             lexer: TokenKind::lexer(""),
-            instructions: vec![],
-            constants: vec![],
+			sealed_blocks: vec![],
+			current_block: Block::new(),
             registers: (0..16).collect(),
             previous: None,
             current: None,
             previous_slice: "".into(),
-            scope: Scope::default()
+            scope: Scope::default(),
         }
     }
 }
@@ -71,7 +62,7 @@ impl Default for Compiler<'_> {
 impl<'s> Compiler<'s> {
     /// Take the array of tokens and generate bytecode
     pub fn compile(&mut self) -> CompileResult<()> {
-        while self.peek() != None{
+        while self.peek() != None {
             self.declaration()?;
         }
         self.consume(None, "Expected end of expression")?;
@@ -86,10 +77,6 @@ impl<'s> Compiler<'s> {
         self.current = self.lexer.next();
 
         self.current.clone()
-    }
-
-    fn previous(&self) -> Option<TokenKind> {
-        self.previous.clone()
     }
 
     /// Consume a token and expect to equal `kind`
@@ -131,38 +118,50 @@ impl<'s> Compiler<'s> {
 
     /// Free a register
     pub(crate) fn free_register(&mut self, register: u8) {
+		dbg!(register);
         self.registers.push(register)
     }
+
+	pub fn new_block(&mut self) {
+		let sealed = self.current_block.clone().seal();
+		self.sealed_blocks.push(sealed);
+		self.current_block = Block::new();
+	}
 
     /// Emit an [Instruction] and it's arguments
     /// Converts an [Instruction] to a u8, and pushes it along with it's arguments onto the end of the
     /// instructions vector
     pub(crate) fn emit_byte(&mut self, instruction: Instruction, arguments: Vec<u8>) {
-        // Push the instruction as a byte onto the vec
-        self.instructions.push(instruction as u8);
-        // Extend the `instructions` vec with the `arguments` vec
-        self.instructions.extend(arguments)
+        match self.current_block.emit_byte(instruction, &arguments) {
+			Ok(()) => {},
+			Err(()) => {
+				self.new_block();
+				self.emit_byte(instruction, arguments)
+			}
+		}
     }
 
     /// Store a constant value and append the appropriate bytes to the bytecode
     /// Specifically, encode the value as bytes and append those to the constants vector, then emit
     /// a [Instruction::Const] and the starting index of the vector
     pub(crate) fn emit_const(&mut self, value: Value) -> CompileResult<u8> {
-        // Get the index of the first byte of the value
-        let idx = self.constants.len();
-        // Convert the value to bytes
-        let value: Vec<u8> = value.into();
-        // Emit the byte with the starting index and the length of the value as the arguments
-        let store = self.use_register()?;
-        self.emit_byte(Instruction::Const, vec![idx as u8, value.len() as u8, store]);
-        // Append the byteified value onto the `constants` vec
-        self.constants.extend(value.clone());
-        Ok(store)
+		let store = self.use_register()?;
+        match self.current_block.emit_const(&value, store) {
+			Ok(()) => {},
+			Err(()) => {
+				println!("error!");
+				self.new_block();
+				self.free_register(store);
+				self.emit_const(value)?;
+			}
+		}
+
+		Ok(store)
     }
 
     /// Check if the next token is expected
-    pub(crate) fn tag(&mut self, expected: Option<&TokenKind>) -> bool {
-        if self.peek() == expected.clone() {
+    pub(crate) fn tag(&mut self, expected: Option<TokenKind>) -> bool {
+        if self.peek() == expected {
             self.next();
             true
         } else {
@@ -173,7 +172,7 @@ impl<'s> Compiler<'s> {
     /// Wrapper around `tag` for multiple values of `expected`
     pub(crate) fn tag_any(&mut self, expected: Vec<TokenKind>) -> Option<usize> {
         for (idx, token) in expected.iter().enumerate() {
-            if self.tag(Some(token)) {
+            if self.tag(Some(token.clone())) {
                 return Some(idx);
             }
         }
@@ -181,7 +180,7 @@ impl<'s> Compiler<'s> {
     }
 
     pub(crate) fn declaration(&mut self) -> CompileResult<()> {
-        if self.tag(Some(&TokenKind::Let)) {
+        if self.tag(Some(TokenKind::Let)) {
             self.let_declaration()
         } else {
             self.statement()?;
@@ -192,21 +191,19 @@ impl<'s> Compiler<'s> {
     pub(crate) fn let_declaration(&mut self) -> CompileResult<()> {
         let global = self.parse_variable("Expected variable name after 'let'.")?;
 
-        self.consume(
-            Some(TokenKind::Equal),
-            "Variables must be initialized."
-        )?;
+        self.consume(Some(TokenKind::Equal), "Variables must be initialized.")?;
         let v = self.expression()?;
+
         self.consume(
             Some(TokenKind::Semicolon),
-            "Expected ';' after variable declaration"
+            "Expected ';' after variable declaration",
         )?;
-        self.define_variable(global, v);
+        self.define_variable(global, v)?;
         Ok(())
     }
 
     pub(crate) fn statement(&mut self) -> CompileResult<u8> {
-        if self.tag(Some(&TokenKind::LeftBrace)) {
+        if self.tag(Some(TokenKind::LeftBrace)) {
             self.begin_scope();
             let v = self.block()?;
             self.end_scope();
@@ -240,7 +237,7 @@ impl<'s> Compiler<'s> {
             vec![
                 (TokenKind::EqualEqual, Instruction::Eq, false),
                 (TokenKind::BangEqual, Instruction::Ne, false),
-            ]
+            ],
         )
     }
 
@@ -295,7 +292,9 @@ impl<'s> Compiler<'s> {
         Ok(
             if let Some(idx) = self.tag_any(unary_ops.iter().map(|i| i.0.clone()).collect()) {
                 let rhs = self.primitive()?;
-                let store = self.use_register()?;
+                dbg!();
+				let store = self.use_register()?;
+				dbg!();
                 self.emit_byte(unary_ops[idx].1, vec![rhs, store]);
                 self.free_register(rhs);
                 store
@@ -348,20 +347,22 @@ impl<'s> Compiler<'s> {
 
     pub(crate) fn load_variable(&mut self) -> CompileResult<u8> {
         let idx = self.ident_const()?;
-        if self.tag(Some(&TokenKind::Equal)) {
+        if self.tag(Some(TokenKind::Equal)) {
             let value = self.expression()?;
             self.emit_byte(Instruction::Set, vec![idx, value])
         }
+		dbg!();
         let store = self.use_register()?;
+		dbg!();
         self.emit_byte(Instruction::Read, vec![idx, store]);
         Ok(store)
     }
 
     pub(crate) fn block(&mut self) -> CompileResult<u8> {
-        while !self.tag(Some(&TokenKind::RightBrace)) && !self.tag(None) {
-            self.declaration();
+        while !self.tag(Some(TokenKind::RightBrace)) && !self.tag(None) {
+            self.declaration()?;
         }
-        self.consume(Some(TokenKind::RightBrace), "Expect '}' after block.");
+        self.consume(Some(TokenKind::RightBrace), "Expect '}' after block.")?;
         Ok(0) // TODO(mx-mw) implement returning values
     }
 
@@ -374,7 +375,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Parse a variable and produce a global index
-    pub(crate) fn parse_variable(&mut self, why: &str) -> CompileResult<u8> {
+    pub(crate) fn parse_variable(&mut self, why: &'static str) -> CompileResult<u8> {
         self.consume(Some(TokenKind::Identifier), why)?;
 
         self.declare_variable();
@@ -385,8 +386,8 @@ impl<'s> Compiler<'s> {
     pub(crate) fn declare_variable(&mut self) {
         self.scope.num_locals += 1;
         self.scope.locals.push(Local {
-            name: self.previous_slice.clone(),
-            depth: self.scope.depth
+            name: self.lexer.slice().to_string(),
+            depth: self.scope.depth,
         });
     }
 
@@ -395,7 +396,8 @@ impl<'s> Compiler<'s> {
     }
 
     pub(crate) fn define_variable(&mut self, ident_idx: u8, value_idx: u8) -> CompileResult<()> {
-        Ok(self.emit_byte(Instruction::Let, vec![ident_idx, value_idx]))
+        self.emit_byte(Instruction::Let, vec![ident_idx, value_idx]);
+        Ok(())
     }
 
     /// Parse a binary expression.
@@ -413,13 +415,15 @@ impl<'s> Compiler<'s> {
             // Get the right hand side register idx
             let rhs = next(self)? as u8;
             let mut args = if expected[idx].2 {
-                vec![lhs, rhs]
-            } else {
                 vec![rhs, lhs]
+            } else {
+                vec![lhs, rhs]
             };
             if store {
                 // Get the register to store the value in
+				dbg!();
                 args.push(self.use_register()?);
+				dbg!();
             }
             // Emit the instruction and it's arguments
             self.emit_byte(expected[idx].clone().1, args.clone());
@@ -430,7 +434,7 @@ impl<'s> Compiler<'s> {
             // Return the register that the value was stored in
             Ok(if store { args[2] } else { 0 })
         } else {
-            // The value was not any of the expected operators, so act as a proxy for the higher
+            // The value was not any of the expected operators, so hand on to the higher
             // precedence operation.
             Ok(lhs)
         }
@@ -439,11 +443,11 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Compiler, Instruction, TokenKind, Value};
+    use crate::{Compiler, Instruction, TokenKind, Value, Block};
     use logos::Logos;
 
     pub mod utils {
-        use crate::{Compiler, Instruction, TokenKind, Value};
+        use crate::{Compiler, Instruction, TokenKind, Value, Block};
         use logos::Logos;
 
         /// Init a compiler instance
@@ -460,43 +464,17 @@ mod tests {
             compiler
         }
 
-        /// Emit the bytecode to add a constant to the constants and instructions vectors
-        pub(super) fn add_constant(
-            constants: &mut Vec<u8>,
-            instructions: &mut Vec<u8>,
-            value: Value,
-            store: u8,
-        ) {
-            // Get the index at which the first byte of the value will be stored
-            let idx = constants.len();
-            // Get the raw bytes of the constant
-            let bytes: Vec<u8> = value.into();
-            // Push the value bytes onto the constants array
-            constants.extend(bytes.clone());
-            // Push the appropriate instructions to store a constant and load it into a register
-            instructions.extend(vec![
-                Instruction::Const as u8,
-                idx as u8,
-                bytes.len() as u8,
-                Instruction::Load as u8,
-                idx as u8,
-                bytes.len() as u8,
-                store,
-            ]);
-        }
-
         /// Test a constant value
         pub(super) fn constant_test(value: Value, source: &str) {
             let compiler = compiler(source);
 
-            let mut constants = Vec::new();
-            let mut instructions = Vec::new();
+            let mut block = Block::new();
             // Add the expected value onto the arrays
-            add_constant(&mut constants, &mut instructions, value, 0);
-            // Assert that the correct instructions were emitted
-            assert_eq!(compiler.instructions, instructions);
-            // Assert that the correct values were stored
-            assert_eq!(compiler.constants, constants);
+            assert!(block.emit_const(&value, 0).is_ok());
+
+			
+            // Assert that the correct constants and instructions were emitted
+            assert_eq!(compiler.current_block, block);
         }
 
         /// Test a binary expression
@@ -504,63 +482,32 @@ mod tests {
             let source: String = format!("8 {} 12;", op_c);
             let compiler = compiler(source.as_str());
 
-            let mut instructions = vec![];
-            let mut constants = vec![];
+            let mut block = Block::new();
             // Add the default testing values as constants to the arrays
-            add_constant(&mut constants, &mut instructions, Value::VNumber(8.), 0);
-            add_constant(&mut constants, &mut instructions, Value::VNumber(12.), 1);
-            if rev {
-                instructions.append(&mut vec![op_i as u8, 0, 1]);
+			assert!(block.emit_const(&Value::VNumber(8.), 0).is_ok());
+			assert!(block.emit_const(&Value::VNumber(12.), 1).is_ok());
+            if !rev {
+				block.emit_byte(op_i, &vec![0, 1]).unwrap()
             } else {
-                instructions.append(&mut vec![op_i as u8, 1, 0]);
+                block.emit_byte(op_i, &vec![1, 0]).unwrap()
             }
 
             if store {
-                instructions.push(2)
+                block.emit_byte(Instruction::Sub /* 2 */, &vec![]).unwrap()
             }
 
-            // Assert that the correct instructions were emitted
-            assert_eq!(compiler.instructions, instructions);
-            // Assert that the correct values were stored
-            assert_eq!(compiler.constants, constants);
+            // Assert that the correct instructions and constants were stored
+			assert_eq!(compiler.current_block, block)
         }
     }
 
     use utils::compiler;
 
     #[test]
-    fn emit_bytecode() {
-        let mut compiler = Compiler::default();
-        compiler.emit_byte(Instruction::Add, vec![12, 13, 234]);
-        assert_eq!(compiler.instructions, vec![2, 12, 13, 234]);
-        compiler.instructions = vec![];
-        compiler.emit_byte(Instruction::Mul, vec![34, 2, 12]);
-        assert_eq!(compiler.instructions, vec![4, 34, 2, 12]);
-        compiler.instructions = vec![];
-        compiler.emit_byte(Instruction::Load, vec![5, 2, 32]);
-        assert_eq!(compiler.instructions, vec![1, 5, 2, 32]);
-        compiler.instructions = vec![];
-        compiler.emit_byte(Instruction::Div, vec![1, 2, 3]);
-        assert_eq!(compiler.instructions, vec![5, 1, 2, 3]);
-        compiler.instructions = vec![];
-        compiler.emit_byte(Instruction::Not, vec![5, 6, 4]);
-        assert_eq!(compiler.instructions, vec![10, 5, 6, 4]);
-        compiler.instructions = vec![];
-    }
-
-    #[test]
     fn consume() {
         let mut compiler = Compiler::default();
         compiler.lexer = TokenKind::lexer(";;;;;;");
         assert!(compiler.consume(Some(TokenKind::Semicolon), "").is_ok());
-        // TODO(mx-mw) do this but without the console stuff... maybe add a flag for logging
-        // assert_eq!(
-        //     compiler.consume(Some(TokenKind::Bang), "..."),
-        //     Err((
-        //         CompileError::TokenError,
-        //         "... (Expected Some(Bang); got Semicolon)".to_string()
-        //     ))
-        // );
     }
 
     #[test]
@@ -596,11 +543,30 @@ mod tests {
         // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
         let compiler = compiler("!false;");
 
-        let mut instructions = Vec::new();
-        let mut constants = Vec::new();
-        utils::add_constant(&mut constants, &mut instructions, Value::VBool(false), 0);
-        instructions.extend(vec![Instruction::Not as u8, 0, 1]);
-        assert_eq!(compiler.instructions, instructions);
-        assert_eq!(compiler.constants, constants);
+        let mut block = Block::new();
+		assert!(block.emit_const(&Value::VBool(false), 0).is_ok());
+		assert!(block.emit_byte(Instruction::Not, &vec![0, 1]).is_ok());
+        assert_eq!(compiler.current_block, block);
+    }
+
+    #[test]
+    fn let_declaration() {
+        let compiler = compiler("let asdf = true;");
+        let mut block = Block::new();
+		assert!(block.emit_const(&Value::VString("asdf".into()), 0).is_ok());
+		assert!(block.emit_const(&Value::VBool(true), 1).is_ok());
+
+        let scope = super::Scope {
+            locals: vec![super::Local {
+                name: "asdf".to_string(),
+                depth: 0,
+            }],
+            num_locals: 1,
+            depth: 0,
+        };
+
+		assert!(block.emit_byte(Instruction::Let, &vec![0, 1]).is_ok());
+		assert_eq!(compiler.current_block, block);
+        assert_eq!(compiler.scope, scope);
     }
 }

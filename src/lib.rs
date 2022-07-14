@@ -1,13 +1,15 @@
-mod chunk;
+mod block;
 mod compiler;
 mod instruction;
 mod scanner;
 mod value;
 mod vm;
 
+pub use block::*;
 pub use compiler::Compiler;
 pub use instruction::Instruction;
 pub use value::Value;
+pub use vm::Runtime;
 // pub use vm::{Environment, VM};
 pub use scanner::TokenKind;
 
