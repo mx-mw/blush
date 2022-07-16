@@ -1,5 +1,3 @@
-use crate::Value;
-
 /*
     # Virtual Machine
     Code is executed by matching bytes to instructions inside of a loop. The loop consumes the next byte,
@@ -10,13 +8,19 @@ use crate::Value;
 	Ex. Binary arithmetic instructions have 3 arguments in the 3 following bytes
 */
 
+use crate::Value;
+
 mod error;
+mod environment;
+pub use environment::*;
 pub use error::*;
 
 pub struct Runtime {
     pub bytecode: Vec<u8>,
+	pub scope: RuntimeScope,
     pub constants: Vec<u8>,
     pub ic: usize,
+	pub compiler_scope: CompilerScope,
     pub registers: Vec<Value>,
 }
 
@@ -46,10 +50,12 @@ macro_rules! operation {
 }
 
 impl Runtime {
-    pub fn new(bytecode: Vec<u8>, constants: Vec<u8>) -> RuntimeResult<Self> {
+    pub fn new(bytecode: Vec<u8>, constants: Vec<u8>, scope: Option<RuntimeScope>, compiler_scope: CompilerScope) -> RuntimeResult<Self> {
         Ok(Self {
             bytecode,
             constants,
+			scope: scope.unwrap_or(compiler_scope.clone().into()),
+			compiler_scope,
             ic: 0,
             registers: vec![Value::VBool(false); u8::MAX.into()],
         })
@@ -70,7 +76,7 @@ impl Runtime {
 				8  /*Le*/    => {self.le()?;}
 				9  /*Not*/   => {self.not()?;}
 				10 /*Neg*/   => {self.neg()?;}
-				11 /*Let*/   => {}
+				11 /*Let*/   => {self.let_declr()?;}
 				12 /*Read*/  => {}
 				13 /*Set*/   => {}
 				14 /*Move*/  => {self.ic = self.next() as usize;}
@@ -157,15 +163,27 @@ impl Runtime {
         operation!(self.-, U)
     }
 	
+	pub fn let_declr(&mut self) -> RuntimeResult<()> { // 11 LET   L A    Vv(L) = R(A)
+		let local_idx = self.next();
+		let v = self.at_next();
+		self.scope.vars[local_idx as usize].value = v;
+		Ok(())
+	}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+	use crate::vm::Variable;
     mod util {
         use super::*;
-        pub fn runtime(instructions: Vec<u8>, constants: Vec<u8>) -> Runtime {
-            let mut runtime = Runtime::new(instructions, constants).unwrap();
+        pub fn runtime(instructions: Vec<u8>, constants: Vec<u8>, scope: Option<CompilerScope>) -> Runtime {
+            let mut runtime = Runtime::new(
+				instructions, 
+				constants, 
+				None, 
+				scope.unwrap_or(CompilerScope::default())
+			).unwrap();
             runtime.exec().unwrap();
             runtime
         }
@@ -200,7 +218,7 @@ mod tests {
                 assert!(v1v.is_ok());
                 assert!(v2v.is_ok());
 
-                let runtime = runtime(instructions, constants);
+                let runtime = runtime(instructions, constants, None);
                 let mut registers = vec![Value::VBool(false); u8::MAX.into()];
                 registers[0] = v1.clone();
                 registers[1] = v2.clone();
@@ -231,4 +249,36 @@ mod tests {
     fn mul() {
         binop_test!(*, Instruction::Mul);
     }
+
+	#[test]
+	fn let_declr() {
+		let v1 = Value::VNumber(33.2);
+        let v1s: Vec<u8> = bincode::serialize(&v1).unwrap();
+		let scope = RawScope {
+			depth: 0,
+			num_vars: 1,
+			vars: vec![
+				Local {
+					depth: 0,
+					name: "asdf".into()
+				}
+			]
+		};
+		let runtime = runtime(vec![
+			0, 0, v1s.len() as u8, 0,
+			11, 0, 0
+		], v1s, Some(scope));
+		
+		assert_eq!(runtime.scope, RuntimeScope {
+			depth: 0,
+			num_vars: 1,
+			vars: vec![
+				Variable {
+					depth: 0,
+					name: "asdf".into(),
+					value: v1
+				}
+			]
+		})
+	}
 }

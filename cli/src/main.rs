@@ -3,7 +3,7 @@ use blush::run;
 fn main() {
 	let program =
 r#"
-log("32");
+let a = 123;
 "#;
 	run(program);
 }

@@ -1,4 +1,11 @@
-use crate::{Instruction, TokenKind, Value, Block, SealedBlock};
+/*
+	# Compiler
+	The compiler consists of many functions for parsing grammar and emmitting bytecode.
+	Each parser function returns a u8 referencing the register that the result of the expression was stored in. This
+	allows the higher precedence or enclosing expressions to easily reference the value for later use.
+ */
+
+use crate::{Instruction, TokenKind, Value, Block, SealedBlock, vm::{CompilerScope, Local}};
 use logos::{Lexer, Logos};
 pub type CompileResult<T> = Result<T, (CompileError, String)>;
 
@@ -19,19 +26,6 @@ macro_rules! compile_error {
     });
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Local {
-    name: String,
-    depth: u8,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct Scope {
-    locals: Vec<Local>,
-    num_locals: u8,
-    depth: u8,
-}
-
 #[derive(Clone)]
 pub struct Compiler<'src> {
     pub lexer: Lexer<'src, TokenKind>,
@@ -41,7 +35,7 @@ pub struct Compiler<'src> {
     pub previous: Option<TokenKind>,
     pub previous_slice: String,
     pub current: Option<TokenKind>,
-    pub scope: Scope,
+    pub scope: CompilerScope,
 }
 
 impl Default for Compiler<'_> {
@@ -54,7 +48,7 @@ impl Default for Compiler<'_> {
             previous: None,
             current: None,
             previous_slice: "".into(),
-            scope: Scope::default(),
+            scope: CompilerScope::default(),
         }
     }
 }
@@ -118,7 +112,6 @@ impl<'s> Compiler<'s> {
 
     /// Free a register
     pub(crate) fn free_register(&mut self, register: u8) {
-		dbg!(register);
         self.registers.push(register)
     }
 
@@ -351,9 +344,7 @@ impl<'s> Compiler<'s> {
             let value = self.expression()?;
             self.emit_byte(Instruction::Set, vec![idx, value])
         }
-		dbg!();
         let store = self.use_register()?;
-		dbg!();
         self.emit_byte(Instruction::Read, vec![idx, store]);
         Ok(store)
     }
@@ -384,8 +375,8 @@ impl<'s> Compiler<'s> {
     }
 
     pub(crate) fn declare_variable(&mut self) {
-        self.scope.num_locals += 1;
-        self.scope.locals.push(Local {
+        self.scope.num_vars += 1;
+        self.scope.vars.push(Local {
             name: self.lexer.slice().to_string(),
             depth: self.scope.depth,
         });
@@ -421,9 +412,7 @@ impl<'s> Compiler<'s> {
             };
             if store {
                 // Get the register to store the value in
-				dbg!();
                 args.push(self.use_register()?);
-				dbg!();
             }
             // Emit the instruction and it's arguments
             self.emit_byte(expected[idx].clone().1, args.clone());
@@ -556,12 +545,12 @@ mod tests {
 		assert!(block.emit_const(&Value::VString("asdf".into()), 0).is_ok());
 		assert!(block.emit_const(&Value::VBool(true), 1).is_ok());
 
-        let scope = super::Scope {
-            locals: vec![super::Local {
+        let scope = super::CompilerScope {
+            vars: vec![super::Local {
                 name: "asdf".to_string(),
                 depth: 0,
             }],
-            num_locals: 1,
+            num_vars: 1,
             depth: 0,
         };
 

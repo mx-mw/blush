@@ -6,6 +6,11 @@ pub enum Value {
     VBool(bool),
 }
 
+impl Default for Value {
+	fn default() -> Self {
+		Self::VBool(false)
+	}
+}
 impl From<Value> for Vec<u8> {
     fn from(value: Value) -> Vec<u8> {
         bincode::serialize(&value).unwrap()

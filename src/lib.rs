@@ -20,5 +20,5 @@ pub fn run(source: &str) {
         lexer: TokenKind::lexer(source),
         ..Default::default()
     };
-    compiler.compile().unwrap()
+    compiler.compile().unwrap();
 }
