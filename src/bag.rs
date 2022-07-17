@@ -114,7 +114,7 @@ impl Bag {
 }
 
 #[test]
-fn emit_const_overflow() {
+fn emit_overflow() {
 	let mut block = Bag::new();
 	block.populate(vec![0; (u8::MAX - 1) as usize], vec![0; (u8::MAX - 1) as usize]).unwrap();
 	
