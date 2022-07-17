@@ -106,7 +106,7 @@ impl Runtime {
 	}
 
 	fn constants(&self) -> &Vec<u8> {
-		&self.current_block().bytecode
+		&self.current_block().constants
 	}
 
 	fn current(&self) -> u8 {
@@ -129,7 +129,6 @@ impl Runtime {
     }
 
     pub fn constant(&mut self) -> RuntimeResult {
-        println!("contant");
         let idx = self.next()?;
         let len = self.next()?;
         let data = self.constants()[(idx as usize)..(idx + len) as usize].to_vec();
@@ -213,26 +212,18 @@ mod tests {
             ($op:tt, $i:expr) => {
                 let v1 = Value::VNumber(33.2);
                 let v1s: Vec<u8> = bincode::serialize(&v1).unwrap();
+				assert!(bincode::deserialize::<Value>(&v1s).is_ok());
                 let v2 = Value::VNumber(234.0);
                 let v2s: Vec<u8> = bincode::serialize(&v2).unwrap();
+				assert!(bincode::deserialize::<Value>(&v2s).is_ok());
                 let mut constants = vec![];
                 constants.extend(v1s.clone());
                 constants.extend(v2s.clone());
                 let instructions = vec![
-                    Instruction::Const as u8,
-                    0,
-                    v1s.len() as u8,
-                    0,
-                    Instruction::Const as u8,
-                    v1s.len() as u8,
-                    v2s.len() as u8,
-                    1,
-                    $i as u8,
-                    0,
-                    1,
-                    2,
+                    Instruction::Const as u8, 0, v1s.len() as u8, 0,
+                    Instruction::Const as u8, v1s.len() as u8, v2s.len() as u8, 1,
+                    $i as u8, 0, 1, 2,
                 ];
-				
                 let v1v = bincode::deserialize::<Value>(&constants[0..v1s.len()]);
                 let v2v =
                     bincode::deserialize::<Value>(&constants[v1s.len()..v1s.len() + v2s.len()]);

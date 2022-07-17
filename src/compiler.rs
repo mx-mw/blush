@@ -126,11 +126,18 @@ impl<'s> Compiler<'s> {
 		let store = self.use_register()?;
         match self.current_bag.emit_const(&value, store) {
 			Ok(()) => {},
-			Err(()) => {
-				println!("error!");
-				self.new_bag();
-				self.free_register(store);
-				self.emit_const(value)?;
+			Err(e) => {
+				match e {
+					BagError::Full(_) => {
+						self.new_bag();
+						self.free_register(store);
+						self.emit_const(value)?;
+					}
+					_ => {
+						Err(CompilerError::ExternalError("BagError".into(), e.to_string()))?;
+					}
+				}
+				
 			}
 		}
 
@@ -270,9 +277,7 @@ impl<'s> Compiler<'s> {
         Ok(
             if let Some(idx) = self.tag_any(unary_ops.iter().map(|i| i.0.clone()).collect()) {
                 let rhs = self.primitive()?;
-                dbg!();
 				let store = self.use_register()?;
-				dbg!();
                 self.emit_byte(unary_ops[idx].1, vec![rhs, store])?;
                 self.free_register(rhs);
                 store
