@@ -5,32 +5,14 @@
 	allows the higher precedence or enclosing expressions to easily reference the value for later use.
  */
 
-use crate::{Instruction, TokenKind, Value, Block, SealedBlock, vm::{CompilerScope, Local}};
+use crate::{Instruction, TokenKind, Value, Bag, ZippedBag, runtime::{CompilerScope, Local}, error::{bag::BagError, compiler::*}};
 use logos::{Lexer, Logos};
-pub type CompileResult<T> = Result<T, (CompileError, String)>;
-
-#[derive(Debug, PartialEq)]
-pub enum CompileError {
-    TokenError,    // A token was not in the correct position
-    RegisterError, // Any error involving registers
-}
-
-macro_rules! compile_error {
-    ($kind:expr, $str:tt, $($arg:tt)*) => ({
-        eprintln!("Compile Error: {} @ {}", format!($str, $($arg)*), std::line!());
-        return Err(($kind, format!($str, $($arg)*)));
-    });
-    ($kind:expr, $str:tt) => ({
-        eprintln!("Compile Error: {} @ {}", $str, std::line!());
-        return Err(($kind, $str.to_string()));
-    });
-}
 
 #[derive(Clone)]
 pub struct Compiler<'src> {
     pub lexer: Lexer<'src, TokenKind>,
-	pub sealed_blocks: Vec<SealedBlock>,
-	pub current_block: Block,
+	pub baggage: Vec<ZippedBag>,
+	pub current_bag: Bag,
     pub registers: Vec<u8>,
     pub previous: Option<TokenKind>,
     pub previous_slice: String,
@@ -42,8 +24,8 @@ impl Default for Compiler<'_> {
     fn default() -> Self {
         Self {
             lexer: TokenKind::lexer(""),
-			sealed_blocks: vec![],
-			current_block: Block::new(),
+			baggage: vec![],
+			current_bag: Bag::new(),
             registers: (0..16).collect(),
             previous: None,
             current: None,
@@ -55,7 +37,7 @@ impl Default for Compiler<'_> {
 
 impl<'s> Compiler<'s> {
     /// Take the array of tokens and generate bytecode
-    pub fn compile(&mut self) -> CompileResult<()> {
+    pub fn compile(&mut self) -> CompilerResult {
         while self.peek() != None {
             self.declaration()?;
         }
@@ -79,20 +61,18 @@ impl<'s> Compiler<'s> {
         &mut self,
         kind: Option<TokenKind>,
         why: &'static str,
-    ) -> CompileResult<()> {
+    ) -> CompilerResult {
         match self.next() {
             // Match kind
             k if k == kind => Ok(()),
             // Give a slightly more verbose error showing the token it saw
-            Some(k) => compile_error!(
-                CompileError::TokenError,
-                "{} (Expected {:?}; got {:?})",
-                why,
-                kind,
-                k
-            ),
+            Some(k) => Err(CompilerError::TokenError(
+				TokenError::ExpectedToken { reason: why, expected: kind, recieved: Some(k) }
+			)),
             // None was not expected
-            None => compile_error!(CompileError::TokenError, "{} (Expected {:?})", why, kind),
+            None => Err(CompilerError::TokenError(
+				TokenError::ExpectedToken { reason: why, expected: kind, recieved: None }
+			)),
         }
     }
 
@@ -102,9 +82,9 @@ impl<'s> Compiler<'s> {
     }
 
     /// Get the next available register to store a value in
-    pub(crate) fn use_register(&mut self) -> CompileResult<u8> {
+    pub(crate) fn use_register(&mut self) -> CompilerResult<u8> {
         if self.registers.is_empty() {
-            compile_error!(CompileError::RegisterError, "No empty registers")
+            Err(CompilerError::RegisterError(RegisterError::NoEmptyRegisters))
         } else {
             Ok(self.registers.remove(0))
         }
@@ -115,21 +95,26 @@ impl<'s> Compiler<'s> {
         self.registers.push(register)
     }
 
-	pub fn new_block(&mut self) {
-		let sealed = self.current_block.clone().seal();
-		self.sealed_blocks.push(sealed);
-		self.current_block = Block::new();
+	pub fn new_bag(&mut self) {
+		let zipped = self.current_bag.clone().zip_up();
+		self.baggage.push(zipped);
+		self.current_bag = Bag::new();
 	}
 
     /// Emit an [Instruction] and it's arguments
     /// Converts an [Instruction] to a u8, and pushes it along with it's arguments onto the end of the
     /// instructions vector
-    pub(crate) fn emit_byte(&mut self, instruction: Instruction, arguments: Vec<u8>) {
-        match self.current_block.emit_byte(instruction, &arguments) {
-			Ok(()) => {},
-			Err(()) => {
-				self.new_block();
-				self.emit_byte(instruction, arguments)
+    pub(crate) fn emit_byte(&mut self, instruction: Instruction, arguments: Vec<u8>) -> CompilerResult<()> {
+        match self.current_bag.emit_byte(instruction, &arguments) {
+			Ok(()) => Ok(()),
+			Err(_e) if matches!(BagError::Full, _e)  => {
+				
+				self.new_bag();
+				self.emit_byte(instruction, arguments)?;
+				Ok(())
+			}
+			Err(e) => {
+				Err(CompilerError::ExternalError("BagError".into(), e.to_string()))
 			}
 		}
     }
@@ -137,13 +122,13 @@ impl<'s> Compiler<'s> {
     /// Store a constant value and append the appropriate bytes to the bytecode
     /// Specifically, encode the value as bytes and append those to the constants vector, then emit
     /// a [Instruction::Const] and the starting index of the vector
-    pub(crate) fn emit_const(&mut self, value: Value) -> CompileResult<u8> {
+    pub(crate) fn emit_const(&mut self, value: Value) -> CompilerResult<u8> {
 		let store = self.use_register()?;
-        match self.current_block.emit_const(&value, store) {
+        match self.current_bag.emit_const(&value, store) {
 			Ok(()) => {},
 			Err(()) => {
 				println!("error!");
-				self.new_block();
+				self.new_bag();
 				self.free_register(store);
 				self.emit_const(value)?;
 			}
@@ -172,7 +157,7 @@ impl<'s> Compiler<'s> {
         None
     }
 
-    pub(crate) fn declaration(&mut self) -> CompileResult<()> {
+    pub(crate) fn declaration(&mut self) -> CompilerResult {
         if self.tag(Some(TokenKind::Let)) {
             self.let_declaration()
         } else {
@@ -181,7 +166,7 @@ impl<'s> Compiler<'s> {
         }
     }
 
-    pub(crate) fn let_declaration(&mut self) -> CompileResult<()> {
+    pub(crate) fn let_declaration(&mut self) -> CompilerResult {
         let global = self.parse_variable("Expected variable name after 'let'.")?;
 
         self.consume(Some(TokenKind::Equal), "Variables must be initialized.")?;
@@ -195,7 +180,7 @@ impl<'s> Compiler<'s> {
         Ok(())
     }
 
-    pub(crate) fn statement(&mut self) -> CompileResult<u8> {
+    pub(crate) fn statement(&mut self) -> CompilerResult<u8> {
         if self.tag(Some(TokenKind::LeftBrace)) {
             self.begin_scope();
             let v = self.block()?;
@@ -206,7 +191,7 @@ impl<'s> Compiler<'s> {
         }
     }
 
-    pub(crate) fn expression_stmt(&mut self) -> CompileResult<u8> {
+    pub(crate) fn expression_stmt(&mut self) -> CompilerResult<u8> {
         let res = self.expression()?;
         self.consume(
             Some(TokenKind::Semicolon),
@@ -217,13 +202,13 @@ impl<'s> Compiler<'s> {
 
     /// Parse expressions and generate bytecode
     /// Root method for parsing expressions
-    pub(crate) fn expression(&mut self) -> CompileResult<u8> {
+    pub(crate) fn expression(&mut self) -> CompilerResult<u8> {
         self.equality()
     }
 
     /// Parse an equality assertion expression.
     /// i.e. parse `x == y` or `x != y`
-    pub(crate) fn equality(&mut self) -> CompileResult<u8> {
+    pub(crate) fn equality(&mut self) -> CompilerResult<u8> {
         self.binop(
             Self::comparison,
             false,
@@ -236,7 +221,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a comparison expression.
     /// i.e. parse `x < y`, `x > y`, `x <= y` or `x >= y`
-    pub(crate) fn comparison(&mut self) -> CompileResult<u8> {
+    pub(crate) fn comparison(&mut self) -> CompilerResult<u8> {
         self.binop(
             Self::term,
             false,
@@ -251,7 +236,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a term expression
     /// i.e. parse `x + y` or `x - y`
-    pub(crate) fn term(&mut self) -> CompileResult<u8> {
+    pub(crate) fn term(&mut self) -> CompilerResult<u8> {
         self.binop(
             Self::factor,
             true,
@@ -264,7 +249,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a factor expression
     /// i.e. parse `x * y` or `x / y`
-    pub(crate) fn factor(&mut self) -> CompileResult<u8> {
+    pub(crate) fn factor(&mut self) -> CompilerResult<u8> {
         self.binop(
             Self::unary,
             true,
@@ -277,7 +262,7 @@ impl<'s> Compiler<'s> {
 
     /// Parse a unary expression
     /// i.e. parse `!x` or `-x`
-    pub(crate) fn unary(&mut self) -> CompileResult<u8> {
+    pub(crate) fn unary(&mut self) -> CompilerResult<u8> {
         let unary_ops = vec![
             (TokenKind::Minus, Instruction::Neg),
             (TokenKind::Bang, Instruction::Not),
@@ -288,7 +273,7 @@ impl<'s> Compiler<'s> {
                 dbg!();
 				let store = self.use_register()?;
 				dbg!();
-                self.emit_byte(unary_ops[idx].1, vec![rhs, store]);
+                self.emit_byte(unary_ops[idx].1, vec![rhs, store])?;
                 self.free_register(rhs);
                 store
             } else {
@@ -298,7 +283,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Parse a grouping (stuff in parentheses) expression
-    pub(crate) fn grouping(&mut self) -> CompileResult<u8> {
+    pub(crate) fn grouping(&mut self) -> CompilerResult<u8> {
         let idx = self.expression()?;
         self.consume(
             Some(TokenKind::RightParen),
@@ -310,13 +295,13 @@ impl<'s> Compiler<'s> {
     /// Compile primitive expressions
     /// i.e. take a value in blush code such as a number or string, and produce Const instructions
     /// according to the TokenKind and slice
-    pub(crate) fn primitive(&'_ mut self) -> CompileResult<u8> {
+    pub(crate) fn primitive(&'_ mut self) -> CompilerResult<u8> {
         // Peek the next byte
         let next = self.next();
 
         // If we reached EOF
         if next.is_none() {
-            compile_error!(CompileError::TokenError, "Expected expression, reached EOF")
+            Err(CompilerError::TokenError(TokenError::EarlyEof))?
         }
         // Cannot be None
         let n = next.unwrap();
@@ -327,30 +312,26 @@ impl<'s> Compiler<'s> {
             Bool(b) => self.emit_const(Value::VBool(b)),
             Identifier => self.load_variable(),
             LeftParen => self.grouping(),
-            _ => {
-                compile_error!(
-                    CompileError::TokenError,
-                    "Expected expression, got {:?}.",
-                    n
-                )
-            }
+            _ => Err(CompilerError::TokenError(TokenError::EarlyEof))
+
         };
         res
     }
 
-    pub(crate) fn load_variable(&mut self) -> CompileResult<u8> {
+    pub(crate) fn load_variable(&mut self) -> CompilerResult<u8> {
         let idx = self.ident_const()?;
         if self.tag(Some(TokenKind::Equal)) {
             let value = self.expression()?;
-            self.emit_byte(Instruction::Set, vec![idx, value])
+            self.emit_byte(Instruction::Set, vec![idx, value])?;
         }
         let store = self.use_register()?;
-        self.emit_byte(Instruction::Read, vec![idx, store]);
+        self.emit_byte(Instruction::Read, vec![idx, store])?;
         Ok(store)
     }
 
-    pub(crate) fn block(&mut self) -> CompileResult<u8> {
-        while !self.tag(Some(TokenKind::RightBrace)) && !self.tag(None) {
+    pub(crate) fn block(&mut self) -> CompilerResult<u8> {
+		self.scope.depth+=1;
+        while self.peek() != Some(TokenKind::RightBrace) && !self.tag(None) {
             self.declaration()?;
         }
         self.consume(Some(TokenKind::RightBrace), "Expect '}' after block.")?;
@@ -366,7 +347,7 @@ impl<'s> Compiler<'s> {
     }
 
     /// Parse a variable and produce a global index
-    pub(crate) fn parse_variable(&mut self, why: &'static str) -> CompileResult<u8> {
+    pub(crate) fn parse_variable(&mut self, why: &'static str) -> CompilerResult<u8> {
         self.consume(Some(TokenKind::Identifier), why)?;
 
         self.declare_variable();
@@ -382,12 +363,12 @@ impl<'s> Compiler<'s> {
         });
     }
 
-    pub(crate) fn ident_const(&mut self) -> CompileResult<u8> {
+    pub(crate) fn ident_const(&mut self) -> CompilerResult<u8> {
         self.emit_const(Value::VString(self.lexer.slice().to_string()))
     }
 
-    pub(crate) fn define_variable(&mut self, ident_idx: u8, value_idx: u8) -> CompileResult<()> {
-        self.emit_byte(Instruction::Let, vec![ident_idx, value_idx]);
+    pub(crate) fn define_variable(&mut self, ident_idx: u8, value_idx: u8) -> CompilerResult {
+        self.emit_byte(Instruction::Let, vec![ident_idx, value_idx])?;
         Ok(())
     }
 
@@ -395,10 +376,10 @@ impl<'s> Compiler<'s> {
     /// i.e. parse any expression which consists of a prefix, infix and suffix.
     pub(crate) fn binop(
         &mut self,
-        next: fn(&mut Self) -> CompileResult<u8>,
+        next: fn(&mut Self) -> CompilerResult<u8>,
         store: bool,
         expected: Vec<(TokenKind, Instruction, bool)>,
-    ) -> CompileResult<u8> {
+    ) -> CompilerResult<u8> {
         // Get the left hand side register idx
         let lhs = next(self)? as u8;
         // Check if the next token is any of the expected operators
@@ -415,7 +396,7 @@ impl<'s> Compiler<'s> {
                 args.push(self.use_register()?);
             }
             // Emit the instruction and it's arguments
-            self.emit_byte(expected[idx].clone().1, args.clone());
+            self.emit_byte(expected[idx].clone().1, args.clone())?;
             // Free the registers used for the lhs and rhs for later use
             self.free_register(lhs);
             self.free_register(rhs);
@@ -432,11 +413,11 @@ impl<'s> Compiler<'s> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Compiler, Instruction, TokenKind, Value, Block};
+    use crate::{Compiler, Instruction, TokenKind, Value, Bag};
     use logos::Logos;
 
     pub mod utils {
-        use crate::{Compiler, Instruction, TokenKind, Value, Block};
+        use crate::{Compiler, Instruction, TokenKind, Value, Bag};
         use logos::Logos;
 
         /// Init a compiler instance
@@ -457,13 +438,13 @@ mod tests {
         pub(super) fn constant_test(value: Value, source: &str) {
             let compiler = compiler(source);
 
-            let mut block = Block::new();
+            let mut bag = Bag::new();
             // Add the expected value onto the arrays
-            assert!(block.emit_const(&value, 0).is_ok());
+            assert!(bag.emit_const(&value, 0).is_ok());
 
 			
             // Assert that the correct constants and instructions were emitted
-            assert_eq!(compiler.current_block, block);
+            assert_eq!(compiler.current_bag, bag);
         }
 
         /// Test a binary expression
@@ -471,22 +452,22 @@ mod tests {
             let source: String = format!("8 {} 12;", op_c);
             let compiler = compiler(source.as_str());
 
-            let mut block = Block::new();
+            let mut bag = Bag::new();
             // Add the default testing values as constants to the arrays
-			assert!(block.emit_const(&Value::VNumber(8.), 0).is_ok());
-			assert!(block.emit_const(&Value::VNumber(12.), 1).is_ok());
+			assert!(bag.emit_const(&Value::VNumber(8.), 0).is_ok());
+			assert!(bag.emit_const(&Value::VNumber(12.), 1).is_ok());
             if !rev {
-				block.emit_byte(op_i, &vec![0, 1]).unwrap()
+				bag.emit_byte(op_i, &vec![0, 1]).unwrap()
             } else {
-                block.emit_byte(op_i, &vec![1, 0]).unwrap()
+                bag.emit_byte(op_i, &vec![1, 0]).unwrap()
             }
 
             if store {
-                block.emit_byte(Instruction::Sub /* 2 */, &vec![]).unwrap()
+                bag.emit_byte(Instruction::Sub /* 2 */, &vec![]).unwrap()
             }
 
             // Assert that the correct instructions and constants were stored
-			assert_eq!(compiler.current_block, block)
+			assert_eq!(compiler.current_bag, bag)
         }
     }
 
@@ -532,18 +513,18 @@ mod tests {
         // TODO(mx-mw) add [Instruction::Neg] implementation once variables are implemented
         let compiler = compiler("!false;");
 
-        let mut block = Block::new();
-		assert!(block.emit_const(&Value::VBool(false), 0).is_ok());
-		assert!(block.emit_byte(Instruction::Not, &vec![0, 1]).is_ok());
-        assert_eq!(compiler.current_block, block);
+        let mut bag = Bag::new();
+		assert!(bag.emit_const(&Value::VBool(false), 0).is_ok());
+		assert!(bag.emit_byte(Instruction::Not, &vec![0, 1]).is_ok());
+        assert_eq!(compiler.current_bag, bag);
     }
 
     #[test]
     fn let_declaration() {
         let compiler = compiler("let asdf = true;");
-        let mut block = Block::new();
-		assert!(block.emit_const(&Value::VString("asdf".into()), 0).is_ok());
-		assert!(block.emit_const(&Value::VBool(true), 1).is_ok());
+        let mut bag = Bag::new();
+		assert!(bag.emit_const(&Value::VString("asdf".into()), 0).is_ok());
+		assert!(bag.emit_const(&Value::VBool(true), 1).is_ok());
 
         let scope = super::CompilerScope {
             vars: vec![super::Local {
@@ -554,8 +535,8 @@ mod tests {
             depth: 0,
         };
 
-		assert!(block.emit_byte(Instruction::Let, &vec![0, 1]).is_ok());
-		assert_eq!(compiler.current_block, block);
+		assert!(bag.emit_byte(Instruction::Let, &vec![0, 1]).is_ok());
+		assert_eq!(compiler.current_bag, bag);
         assert_eq!(compiler.scope, scope);
     }
 }

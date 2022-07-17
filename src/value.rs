@@ -19,7 +19,7 @@ impl From<Value> for Vec<u8> {
 
 use std::ops::*;
 
-use crate::vm::{ArithmeticError, RuntimeError, RuntimeResult};
+use crate::error::runtime::{ArithmeticError, RuntimeError, RuntimeResult};
 
 impl Add for Value {
     type Output = RuntimeResult<Self>;

@@ -1,15 +1,16 @@
-mod block;
+mod bag;
 mod compiler;
 mod instruction;
 mod scanner;
 mod value;
-mod vm;
+mod runtime;
+mod error;
 
-pub use block::*;
+pub use bag::*;
 pub use compiler::Compiler;
 pub use instruction::Instruction;
 pub use value::Value;
-pub use vm::Runtime;
+pub use runtime::Runtime;
 // pub use vm::{Environment, VM};
 pub use scanner::TokenKind;
 

@@ -1,0 +1,18 @@
+use std::fmt;
+use super::BlushError;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum {title_name}Error {
+	ExternalError(String, String),
+}
+
+impl fmt::Display for {title_name}Error {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+       fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl BlushError for {title_name}Error { }
+
+pub type {title_name}Result<O=()> = Result<O, {title_name}Error>;
+{k_ext=rs}

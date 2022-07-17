@@ -8,33 +8,32 @@
 	Ex. Binary arithmetic instructions have 3 arguments in the 3 following bytes
 */
 
-use crate::Value;
+use crate::{Value, ZippedBag, OpenedBag, error::runtime::*};
 
-mod error;
 mod environment;
 pub use environment::*;
-pub use error::*;
+
 
 pub struct Runtime {
-    pub bytecode: Vec<u8>,
 	pub scope: RuntimeScope,
-    pub constants: Vec<u8>,
     pub ic: usize,
 	pub compiler_scope: CompilerScope,
     pub registers: Vec<Value>,
+	pub baggage: Vec<OpenedBag>,
+	pub current_bag: usize,
 }
 
 macro_rules! operation {
 	($self:ident.$op:tt, A) => {{ // Arithmetic
-		let lhs = $self.at_next();
-		let rhs = $self.at_next();
-		$self.set_next((lhs $op rhs)?);
+		let lhs = $self.at_next()?;
+		let rhs = $self.at_next()?;
+		$self.set_next((lhs $op rhs)?)?;
 		Ok(())
 	}};
 
 	($self:ident.$op:tt, C) => {{ // Comparison
-		let lhs = $self.at_next();
-		let rhs = $self.at_next();
+		let lhs = $self.at_next()?;
+		let rhs = $self.at_next()?;
 		if lhs $op rhs {
 			$self.ic+=2;
 		}
@@ -42,7 +41,7 @@ macro_rules! operation {
 	}};
 
 	($self:ident.$op:tt, U) => {{ // Unary
-		let idx = $self.next();
+		let idx = $self.next()?;
 		let value = $self.registers[idx as usize].clone();
 		$self.set(idx, ($op value)?);
 		Ok(())
@@ -50,20 +49,20 @@ macro_rules! operation {
 }
 
 impl Runtime {
-    pub fn new(bytecode: Vec<u8>, constants: Vec<u8>, scope: Option<RuntimeScope>, compiler_scope: CompilerScope) -> RuntimeResult<Self> {
+    pub fn new(baggage: Vec<ZippedBag>, scope: Option<RuntimeScope>, compiler_scope: CompilerScope) -> RuntimeResult<Self> {
         Ok(Self {
-            bytecode,
-            constants,
 			scope: scope.unwrap_or(compiler_scope.clone().into()),
 			compiler_scope,
             ic: 0,
             registers: vec![Value::VBool(false); u8::MAX.into()],
+			baggage: baggage.into_iter().map(|i| i.unzip()).collect(),
+			current_bag: 0,
         })
     }
 
-    pub fn exec(&mut self) -> RuntimeResult<()> {
+    pub fn exec(&mut self) -> RuntimeResult {
         loop {
-            let current: u8 = self.bytecode[self.ic];
+            let current: u8 = self.current();
             match current {
 				0  /*Const*/ => {self.constant()?;}
 				1  /*Add*/   => {self.add()?;}
@@ -79,93 +78,109 @@ impl Runtime {
 				11 /*Let*/   => {self.let_declr()?;}
 				12 /*Read*/  => {}
 				13 /*Set*/   => {}
-				14 /*Move*/  => {self.ic = self.next() as usize;}
-				_ => return malformed_bytecode!(self.bytecode, self.ic)
+				14 /*Move*/  => {self.ic = self.next()? as usize;}
+				_ => return malformed_bytecode!(self.bytecode(), self.ic, "Unexpected byte")
 			}
             self.ic += 1;
-            if self.ic == self.bytecode.len() {
+            if self.ic == self.bytecode().len() {
                 break;
             }
         }
         Ok(())
     }
 
-    fn next(&mut self) -> u8 {
+    fn next(&mut self) -> RuntimeResult<u8> {
         self.ic += 1;
-        if self.ic >= self.bytecode.len() {
-            u8::MAX
+        if self.ic >= u8::MAX as usize {
+            malformed_bytecode!(self.bytecode(), self.ic, "Block is too large")
         } else {
-            self.bytecode[self.ic]
+            Ok(self.current())
         }
     }
 
-    fn at_next(&mut self) -> Value {
-        let idx = self.next() as usize;
-        self.registers[idx].clone()
+	fn current_block(&self) -> &OpenedBag {
+		&self.baggage[self.current_bag]
+	}
+	fn bytecode(&self) -> &Vec<u8> {
+		&self.current_block().bytecode
+	}
+
+	fn constants(&self) -> &Vec<u8> {
+		&self.current_block().bytecode
+	}
+
+	fn current(&self) -> u8 {
+		self.bytecode()[self.ic]
+	}
+
+    fn at_next(&mut self) -> RuntimeResult<Value> {
+        let idx = self.next()? as usize;
+        Ok(self.registers[idx].clone())
     }
 
     fn set(&mut self, idx: u8, value: Value) {
         self.registers[idx as usize] = value;
     }
 
-    fn set_next(&mut self, value: Value) {
-        let idx = self.next();
+    fn set_next(&mut self, value: Value) -> RuntimeResult {
+        let idx = self.next()?;
         self.set(idx, value);
+		Ok(())
     }
 
-    pub fn constant(&mut self) -> RuntimeResult<()> {
+    pub fn constant(&mut self) -> RuntimeResult {
         println!("contant");
-        let idx = self.next();
-        let len = self.next();
-        let data = self.constants[(idx as usize)..(idx + len) as usize].to_vec();
+        let idx = self.next()?;
+        let len = self.next()?;
+        let data = self.constants()[(idx as usize)..(idx + len) as usize].to_vec();
         let value: Value = bincode::deserialize(&data).unwrap();
-        self.set_next(value);
+        self.set_next(value)?;
         Ok(())
     }
 
-    pub fn add(&mut self) -> RuntimeResult<()> {
+    pub fn add(&mut self) -> RuntimeResult {
         operation!(self.+, A)
     }
 
-    pub fn sub(&mut self) -> RuntimeResult<()> {
+    pub fn sub(&mut self) -> RuntimeResult {
         operation!(self.-, A)
     }
 
-    pub fn mul(&mut self) -> RuntimeResult<()> {
+    pub fn mul(&mut self) -> RuntimeResult {
         operation!(self.*, A)
     }
 
-    pub fn div(&mut self) -> RuntimeResult<()> {
+    pub fn div(&mut self) -> RuntimeResult {
         operation!(self./, A)
     }
 
-    pub fn eq(&mut self) -> RuntimeResult<()> {
+    pub fn eq(&mut self) -> RuntimeResult {
         operation!(self.==, C)
     }
 
-    pub fn ne(&mut self) -> RuntimeResult<()> {
+    pub fn ne(&mut self) -> RuntimeResult {
         operation!(self.!=, C)
     }
 
-    pub fn lt(&mut self) -> RuntimeResult<()> {
+    pub fn lt(&mut self) -> RuntimeResult {
         operation!(self.<, C)
     }
 
-    pub fn le(&mut self) -> RuntimeResult<()> {
+    pub fn le(&mut self) -> RuntimeResult {
         operation!(self.<=, C)
     }
 
-    pub fn not(&mut self) -> RuntimeResult<()> {
+    pub fn not(&mut self) -> RuntimeResult {
         operation!(self.!, U)
     }
 
-    pub fn neg(&mut self) -> RuntimeResult<()> {
+    pub fn neg(&mut self) -> RuntimeResult {
         operation!(self.-, U)
     }
 	
-	pub fn let_declr(&mut self) -> RuntimeResult<()> { // 11 LET   L A    Vv(L) = R(A)
-		let local_idx = self.next();
-		let v = self.at_next();
+	pub fn let_declr(&mut self) -> RuntimeResult { // 11 LET   L A    Vv(L) = R(A)
+		let local_idx = self.next()?;
+		let v = self.at_next()?;
 		self.scope.vars[local_idx as usize].value = v;
 		Ok(())
 	}
@@ -174,13 +189,18 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use super::*;
-	use crate::vm::Variable;
+	use crate::{runtime::Variable, Bag, ZippedBag};
     mod util {
         use super::*;
-        pub fn runtime(instructions: Vec<u8>, constants: Vec<u8>, scope: Option<CompilerScope>) -> Runtime {
+
+		pub fn make_bag(bytecode: Vec<u8>, constants: Vec<u8>) -> ZippedBag {
+			let mut bag = Bag::new();
+			bag.populate(bytecode, constants).unwrap();
+			bag.zip_up()
+		}
+        pub fn runtime(baggage: Vec<ZippedBag>, scope: Option<CompilerScope>) -> Runtime {
             let mut runtime = Runtime::new(
-				instructions, 
-				constants, 
+				baggage,
 				None, 
 				scope.unwrap_or(CompilerScope::default())
 			).unwrap();
@@ -212,13 +232,14 @@ mod tests {
                     1,
                     2,
                 ];
+				
                 let v1v = bincode::deserialize::<Value>(&constants[0..v1s.len()]);
                 let v2v =
                     bincode::deserialize::<Value>(&constants[v1s.len()..v1s.len() + v2s.len()]);
                 assert!(v1v.is_ok());
                 assert!(v2v.is_ok());
-
-                let runtime = runtime(instructions, constants, None);
+				let bag = util::make_bag(instructions, constants);
+                let runtime = runtime(vec![bag], None);
                 let mut registers = vec![Value::VBool(false); u8::MAX.into()];
                 registers[0] = v1.clone();
                 registers[1] = v2.clone();
@@ -264,10 +285,11 @@ mod tests {
 				}
 			]
 		};
-		let runtime = runtime(vec![
+		let bag = make_bag(vec![
 			0, 0, v1s.len() as u8, 0,
 			11, 0, 0
-		], v1s, Some(scope));
+		], v1s);
+		let runtime = runtime(vec![bag], Some(scope));
 		
 		assert_eq!(runtime.scope, RuntimeScope {
 			depth: 0,
