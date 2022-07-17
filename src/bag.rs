@@ -4,8 +4,8 @@ use crate::{Instruction, Value, error::bag::*};
 pub struct Bag {
 	pub constants: Vec<u8>,
 	pub bytecode: Vec<u8>,
-	num_constants: u8,
-	num_bytes: u8
+	num_constants: usize,
+	num_bytes: usize
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,7 +56,7 @@ impl Bag {
 		self.check_length((num_instructions, 0))?;
 		self.bytecode.push(instruction as u8);
 		self.bytecode.extend(arguments);
-		self.num_bytes += num_instructions as u8;
+		self.num_bytes += num_instructions;
 		Ok(())
 	}
 
@@ -95,16 +95,20 @@ impl Bag {
 
 	pub fn populate(&mut self, bytecode: Vec<u8>, constants: Vec<u8>) -> BagResult<()> {
 		self.check_length((bytecode.len(), constants.len()))?;
-		
+		self.bytecode.extend(&bytecode);
+		self.constants.extend(&constants);
+		self.num_bytes += bytecode.len();
+		self.num_constants += constants.len();
 		Ok(())
 	}
 
 	// Clean up step implemented now in case extra data needs to be computed
 	pub fn zip_up(self) -> ZippedBag {
-		self.bytecode.extend(vec![0;u8::MAX as usize - self.bytecode.len()]);
-		self.constants.extend(vec![0;u8::MAX as usize - self.constants.len()]);
-		let constants: [u8;u8::MAX as usize] = self.constants.try_into().unwrap();
-		let bytecode: [u8;u8::MAX as usize] = self.bytecode.try_into().unwrap();
+		let mut _self = self.clone();
+		_self.bytecode.extend(vec![0;u8::MAX as usize - _self.bytecode.len()]);
+		_self.constants.extend(vec![0;u8::MAX as usize - _self.constants.len()]);
+		let constants: [u8;u8::MAX as usize] = _self.constants.clone().try_into().unwrap();
+		let bytecode: [u8;u8::MAX as usize] = _self.bytecode.clone().try_into().unwrap();
 		ZippedBag { constants, bytecode }
 	}
 }
@@ -112,7 +116,8 @@ impl Bag {
 #[test]
 fn emit_const_overflow() {
 	let mut block = Bag::new();
-	block.num_bytes = u8::MAX-1;
-	assert!(block.emit_const(&Value::VBool(false), 0).is_err());
+	block.populate(vec![0; (u8::MAX - 1) as usize], vec![0; (u8::MAX - 1) as usize]).unwrap();
+	
+	assert!(block.emit_byte(Instruction::Add, &vec![10u8, 100u8, 80u8]).is_err());
 
 }
