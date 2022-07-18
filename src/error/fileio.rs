@@ -21,6 +21,7 @@ pub enum MalformedHeaderError {
 	ProgStart,
 	ProgEnd,
 	NumBags,
+	ScopeStart,
 }
 
 impl fmt::Display for FileIOError {

@@ -1,4 +1,5 @@
 use crate::Value;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Variable {
@@ -7,13 +8,13 @@ pub struct Variable {
     pub depth: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
 pub struct Local {
     pub name: String,
     pub depth: u8,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 pub struct RawScope<T: Default> {
     pub vars: Vec<T>,
     pub num_vars: u8,

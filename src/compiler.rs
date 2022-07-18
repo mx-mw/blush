@@ -36,12 +36,20 @@ impl Default for Compiler<'_> {
 }
 
 impl<'s> Compiler<'s> {
+	pub fn new(source: &'s str) -> Self {
+		Self {
+			lexer: TokenKind::lexer(source),
+			..Default::default()
+		}
+	}
+
     /// Take the array of tokens and generate bytecode
     pub fn compile(&mut self) -> CompilerResult {
         while self.peek() != None {
             self.declaration()?;
         }
         self.consume(None, "Expected end of expression")?;
+		self.new_bag();
         Ok(())
     }
 
@@ -449,7 +457,7 @@ mod tests {
 
 			
             // Assert that the correct constants and instructions were emitted
-            assert_eq!(compiler.current_bag, bag);
+            assert_eq!(compiler.baggage, vec![bag.zip_up()]);
         }
 
         /// Test a binary expression
@@ -472,7 +480,7 @@ mod tests {
             }
 
             // Assert that the correct instructions and constants were stored
-			assert_eq!(compiler.current_bag, bag)
+			assert_eq!(compiler.baggage, vec![bag.zip_up()])
         }
     }
 
@@ -521,7 +529,7 @@ mod tests {
         let mut bag = Bag::new();
 		assert!(bag.emit_const(&Value::VBool(false), 0).is_ok());
 		assert!(bag.emit_byte(Instruction::Not, &vec![0, 1]).is_ok());
-        assert_eq!(compiler.current_bag, bag);
+        assert_eq!(compiler.baggage, vec![bag.zip_up()]);
     }
 
     #[test]
@@ -541,7 +549,7 @@ mod tests {
         };
 
 		assert!(bag.emit_byte(Instruction::Let, &vec![0, 1]).is_ok());
-		assert_eq!(compiler.current_bag, bag);
+		assert_eq!(compiler.baggage, vec![bag.zip_up()]);
         assert_eq!(compiler.scope, scope);
     }
 }

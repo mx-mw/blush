@@ -49,15 +49,15 @@ macro_rules! operation {
 }
 
 impl Runtime {
-    pub fn new(baggage: Vec<ZippedBag>, scope: Option<RuntimeScope>, compiler_scope: CompilerScope) -> RuntimeResult<Self> {
-        Ok(Self {
+    pub fn new(baggage: Vec<OpenedBag>, scope: Option<RuntimeScope>, compiler_scope: CompilerScope) -> Self {
+        Self {
 			scope: scope.unwrap_or(compiler_scope.clone().into()),
 			compiler_scope,
             ic: 0,
             registers: vec![Value::VBool(false); u8::MAX.into()],
-			baggage: baggage.into_iter().map(|i| i.unzip()).collect(),
+			baggage,
 			current_bag: 0,
-        })
+        }
     }
 
     pub fn exec(&mut self) -> RuntimeResult {

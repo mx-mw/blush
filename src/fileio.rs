@@ -1,19 +1,21 @@
 use std::slice::Iter;
 
-use crate::{ZippedBag, BLUSH_VER, error::fileio::*, OpenedBag};
+use crate::{BLUSH_VER, error::fileio::*, OpenedBag, Compiler, runtime::{CompilerScope}};
 
 const BLUSHPROGRAM: &'static str = "BLUSHPROGRAM";
 const PROGSTART: &'static str = "PROGSTART";
 const PROGEND: &'static str = "PROGEND";
+const SCOPESTART: &'static str = "SCOPESTART";
 
 
-pub fn ser(input: Vec<ZippedBag>) -> Vec<u8> {
+pub fn ser(compiler: &Compiler) -> FileIOResult<Vec<u8>> {
+	let baggage = compiler.clone().baggage;
 	let mut output = vec![];
 	output.extend(format!("{}\n{}\n", BLUSHPROGRAM, BLUSH_VER).as_bytes()); // Blush program header
-	output.push(input.len() as u8); // Number of bags to consume
+	output.push(baggage.len() as u8); // Number of bags to consume
 	output.extend(format!("{}\n", PROGSTART).as_bytes()); // Indicate start of bytecode and constant declarations
 
-	for i in input {
+	for i in baggage {
 		output.push(i.bytes_len);
 		output.push(i.consts_len);
 		output.extend(i.bytecode);
@@ -21,11 +23,17 @@ pub fn ser(input: Vec<ZippedBag>) -> Vec<u8> {
 	}
 
 	output.extend(format!("\n{}", PROGEND).as_bytes()); // Indicate end of bytecode 
+	output.extend(format!("\n{}\n", SCOPESTART).as_bytes()); // Indicate start of scope encoding
+	let scope_bytes = match bincode::serialize(&compiler.scope) {
+		Ok(b) => b,
+		Err(e) => return Err(FileIOError::ExternalError("bincode::ErrorKind".into(), e.to_string()))
+	};
+	output.extend(scope_bytes);
 
-	output
+	Ok(output)
 }
 
-pub fn de(input: Vec<u8>) -> FileIOResult<Vec<OpenedBag>> {
+pub fn de(input: Vec<u8>) -> FileIOResult<(Vec<OpenedBag>, CompilerScope)> {
 	let mut input = input.iter();
 
 	consume(
@@ -64,7 +72,9 @@ pub fn de(input: Vec<u8>) -> FileIOResult<Vec<OpenedBag>> {
 		})
 	}
 	consume(&mut input, format!("\n{}", PROGEND).as_str(), MalformedHeaderError::ProgEnd)?;
-	Ok(bags)
+	consume(&mut input, format!("\n{}\n", SCOPESTART).as_str(), MalformedHeaderError::ScopeStart)?;
+	let scope: CompilerScope = bincode::deserialize(input.as_slice()).unwrap();
+	Ok((bags, scope))
 }
 
 fn consume(input: &mut Iter<u8>, expected: &str, kind: MalformedHeaderError) -> FileIOResult<()> {
@@ -80,22 +90,12 @@ fn consume(input: &mut Iter<u8>, expected: &str, kind: MalformedHeaderError) -> 
 #[cfg(test)]
 mod test {
 	use super::*;
-    use crate::{Value, runtime::tests::util::make_bag};
 	#[test]
 	fn decode() {
-		let v1 = Value::VNumber(33.2);
-		let v1s: Vec<u8> = bincode::serialize(&v1).unwrap();
-		assert!(bincode::deserialize::<Value>(&v1s).is_ok());
-		let v2 = Value::VNumber(234.0);
-		let v2s: Vec<u8> = bincode::serialize(&v2).unwrap();
-		assert!(bincode::deserialize::<Value>(&v2s).is_ok());
-		let mut constants = vec![];
-		constants.extend(v1s);
-		constants.extend(v2s);
-		let instructions = vec![2u8, 234u8, 8u8, 34u8, 34u8];
-		let bag = make_bag(instructions, constants);
-		let binary = ser(vec![bag.clone()]);
+		let mut compiler = Compiler::new("1 + 1;");
+		compiler.compile().unwrap();
+		let binary = ser(&compiler).unwrap();
 		let res = de(binary);
-		assert_eq!(res, Ok(vec![bag.unzip()]))
+		assert_eq!(res, Ok((vec![compiler.baggage[0].unzip()], compiler.scope)))
 	}
 }
