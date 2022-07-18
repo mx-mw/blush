@@ -25,7 +25,7 @@ pub enum MalformedHeaderError {
 
 impl fmt::Display for FileIOError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		dbg!();
+		dbg!(); 
        fmt::Debug::fmt(&self, f)
     }
 }
