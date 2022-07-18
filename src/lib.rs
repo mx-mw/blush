@@ -1,10 +1,14 @@
-mod bag;
-mod compiler;
-mod instruction;
-mod scanner;
-mod value;
-mod runtime;
-mod error;
+pub mod bag;
+pub mod compiler;
+pub mod instruction;
+pub mod scanner;
+pub mod value;
+pub mod runtime;
+pub mod error;
+
+pub mod fileio;
+
+pub(crate) const BLUSH_VER: &'static str = "0.0.1-pre_alpha";
 
 pub use bag::*;
 pub use compiler::Compiler;
@@ -13,13 +17,3 @@ pub use value::Value;
 pub use runtime::Runtime;
 // pub use vm::{Environment, VM};
 pub use scanner::TokenKind;
-
-use logos::Logos;
-
-pub fn run(source: &str) {
-    let mut compiler = Compiler {
-        lexer: TokenKind::lexer(source),
-        ..Default::default()
-    };
-    compiler.compile().unwrap();
-}

@@ -186,10 +186,10 @@ impl Runtime {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 	use crate::{runtime::Variable, Bag, ZippedBag};
-    mod util {
+    pub(crate) mod util {
         use super::*;
 
 		pub fn make_bag(bytecode: Vec<u8>, constants: Vec<u8>) -> ZippedBag {
