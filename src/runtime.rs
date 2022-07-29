@@ -8,7 +8,7 @@
 	Ex. Binary arithmetic instructions have 3 arguments in the 3 following bytes
 */
 
-use crate::{Value, ZippedBag, OpenedBag, error::runtime::*};
+use crate::{Value, OpenedBag, error::runtime::*};
 
 mod environment;
 pub use environment::*;
@@ -129,10 +129,13 @@ impl Runtime {
     }
 
     pub fn constant(&mut self) -> RuntimeResult {
+		dbg!(self.current());
         let idx = self.next()?;
         let len = self.next()?;
         let data = self.constants()[(idx as usize)..(idx + len) as usize].to_vec();
-        let value: Value = bincode::deserialize(&data).unwrap();
+		dbg!(&data);
+		dbg!(idx, len);
+		let value: Value = bincode::deserialize(&data).unwrap();
         self.set_next(value)?;
         Ok(())
     }
@@ -188,21 +191,21 @@ impl Runtime {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-	use crate::{runtime::Variable, Bag, ZippedBag};
+	use crate::{runtime::Variable, Bag};
     pub(crate) mod util {
         use super::*;
 
-		pub fn make_bag(bytecode: Vec<u8>, constants: Vec<u8>) -> ZippedBag {
+		pub fn make_bag(bytecode: Vec<u8>, constants: Vec<u8>) -> OpenedBag {
 			let mut bag = Bag::new();
 			bag.populate(bytecode, constants).unwrap();
-			bag.zip_up()
+			bag.zip_up().unzip()
 		}
-        pub fn runtime(baggage: Vec<ZippedBag>, scope: Option<CompilerScope>) -> Runtime {
+        pub fn runtime(baggage: Vec<OpenedBag>, scope: Option<CompilerScope>) -> Runtime {
             let mut runtime = Runtime::new(
 				baggage,
 				None, 
 				scope.unwrap_or(CompilerScope::default())
-			).unwrap();
+			);
             runtime.exec().unwrap();
             runtime
         }

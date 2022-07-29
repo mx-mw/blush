@@ -35,7 +35,6 @@ pub fn ser(compiler: &Compiler) -> FileIOResult<Vec<u8>> {
 
 pub fn de(input: Vec<u8>) -> FileIOResult<(Vec<OpenedBag>, CompilerScope)> {
 	let mut input = input.iter();
-
 	consume(
 		&mut input, 
 		format!("{}\n{}\n", BLUSHPROGRAM, BLUSH_VER).as_str(),
